@@ -41,16 +41,3 @@ int monitor_syscall(struct trace_event_raw_sys_enter *ctx) {
   bpf_ringbuf_submit(e, 0);
   return 0;
 }
-
-// A simple uprobe hook, testing the execution of the monitor_syscall_event.
-// IMPORTANT: this is a hook, i net do specify the section so that celium/ebpf
-// can find it and execute it the right way
-
-// LEARNING: questa non è è la uprobe stessa: è la funzione che viene lanciata
-// quando la probe è triggerata
-
-// SEC("uprobe/test_syscomb")
-// int monitor_syscall_event(struct pt_regs *ctx) {
-//   bpf_printk("GoSTE: syscall event intercepted!\\n");
-//   return 0;
-// }
