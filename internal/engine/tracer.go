@@ -1,28 +1,38 @@
-package tracer
+package engine
 
-import (
-	"fmt"
-)
+import "context"
 
-// Tracer encapsulates the eBPF programs and maps.
-// It tracks application state and enforces syscall policies.
+// Tracer is the central component of GoSTE.
+// It is responsible for:
+//   - Loading the compiled eBPF objects into the kernel.
+//   - Attaching uprobes for goroutine lifecycle and state-transition tracking.
+//   - Attaching the syscall enforcement tracepoint.
+//   - Reading events from the eBPF ring buffer and dispatching them.
 type Tracer struct {
-	// TODO: add bpf objects
-
+	// TODO: hold loaded eBPF objects (bpf.GosteObjects)
+	// TODO: hold attached links (goroutine uprobes, tracepoint)
+	// TODO: hold ring buffer reader
 }
 
-// NewTracer creates and configures a new Tracer instance.
+// NewTracer creates and initialises a new Tracer.
 func NewTracer() (*Tracer, error) {
 	return &Tracer{}, nil
 }
 
-// Start begins tracing operations, attaching the eBPF programs.
-func (t *Tracer) Start() error {
-	fmt.Println("Tracer started (placeholder logic)")
+// Start loads the eBPF programs into the kernel, attaches all probes,
+// and begins reading events. It blocks until ctx is cancelled.
+func (t *Tracer) Start(ctx context.Context) error {
+	// TODO: load eBPF objects with bpf.LoadGosteObjects()
+	// TODO: attach goroutine uprobes
+	// TODO: attach state-transition uprobes
+	// TODO: attach sys_enter tracepoint
+	// TODO: start ring buffer read loop
 	return nil
 }
 
-// Stop cleanly unloads and detaches the eBPF programs.
+// Stop detaches all probes and unloads the eBPF objects cleanly.
 func (t *Tracer) Stop() {
-	fmt.Println("Tracer stopped (placeholder logic)")
+	// TODO: close ring buffer reader
+	// TODO: close attached links
+	// TODO: close eBPF objects
 }
