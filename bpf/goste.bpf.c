@@ -11,10 +11,13 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define NOF_SYSCALLS 512
 #define MAX_STATES 16
 
+/* Execution mode: tracing vs enforcement */
+const volatile bool is_tracing = true;
+
 struct goroutine_id {
   __u32 tgid;
-  __u64 goid;
   __u32 _pad; // padding: must be set to 0, needed to align to 16 bytes
+  __u64 goid;
 };
 
 // each state has a "bool" array of allowed syscalls and a "bool" array of next
