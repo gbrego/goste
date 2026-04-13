@@ -60,6 +60,10 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("opening executable %s: %w", e.config.BinaryPath, err)
 	}
 
+	if err := e.attachGoProbes(); err != nil {
+		return err
+	}
+
 	fmt.Printf("Engine ready. Starting target: %s\n", e.config.BinaryPath)
 
 	pid, err := e.runTarget(ctx)
@@ -152,17 +156,50 @@ func (e *Engine) attachEntryPointUprobe(pid int) error {
 	}
 	defer f.Close()
 
-	entryPoint := f.Entry
+	entryPointVA := f.Entry
+
+	// Translating VA to real offlse
+	entryPointOffset, err := getOffsetFromVA(f, entryPointVA)
+	if err != nil {
+		return fmt.Errorf("calculating entry point offset: %w", err)
+	}
 
 	up, err := e.executable.Uprobe("", e.bpfObjects.TraceEntryPoint, &link.UprobeOptions{
-		Address: entryPoint,
-		Cookie:  uint64(pid), // Use the PID passed as argument
+		Address: entryPointOffset,
+		Cookie:  uint64(pid),
 	})
+
 	if err != nil {
 		return fmt.Errorf("attaching entry point uprobe: %w", err)
 	}
 
 	e.links = append(e.links, up)
+	return nil
+}
+
+func getOffsetFromVA(f *elf.File, va uint64) (uint64, error) {
+	for _, prog := range f.Progs {
+		if prog.Type == elf.PT_LOAD {
+			if va >= prog.Vaddr && va < prog.Vaddr+prog.Filesz {
+				return va - prog.Vaddr + prog.Off, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("cant map virtuall adrees %x to offset", va)
+}
+
+func (e *Engine) attachGoProbes() error {
+
+	up, err := e.executable.Uprobe("runtime.mstart.abi0", e.bpfObjects.MarkGoThread, nil)
+	if err != nil {
+		up, err = e.executable.Uprobe("runtime.mstart0", e.bpfObjects.MarkGoThread, nil)
+		if err != nil {
+			return fmt.Errorf("attaching uprobe to runtime.mstart variants: %w", err)
+		}
+	}
+
+	e.links = append(e.links, up)
+
 	return nil
 }
 

@@ -69,24 +69,46 @@ struct {
 
 //__always_inline is used by the compiler to copy this code directly in the
 // calling functions
-static __always_inline void trace_task(struct task_struct *task) {
-  __u32 *state = bpf_task_storage_get(&task_tracee_map, task, NULL,
-                                      BPF_LOCAL_STORAGE_GET_F_CREATE);
-  if (state) {
-    *state = 0; // Initialize to starting state
+static __always_inline __u32 *trace_task(struct task_struct *task,
+                                         struct task_struct *parent) {
+  __u32 *task_state = bpf_task_storage_get(&task_tracee_map, task, NULL,
+                                           BPF_LOCAL_STORAGE_GET_F_CREATE);
+  if (!task_state) {
+    return NULL;
   }
+
+  if (!parent) {
+    *task_state = 0;
+    return task_state;
+  }
+
+  __u32 *parent_state = bpf_task_storage_get(&task_tracee_map, parent, NULL, 0);
+
+  if (parent_state) {
+    *task_state = *parent_state;
+  } else {
+    *task_state = 0;
+  }
+
+  return task_state;
 }
 
 SEC("uprobe/runtime.mstart")
 int mark_go_thread(struct pt_regs *ctx) {
   struct task_struct *task = bpf_get_current_task_btf();
 
-  __u32 *state = bpf_task_storage_get(&task_tracee_map, task, NULL,
-                                      BPF_LOCAL_STORAGE_GET_F_CREATE);
+  __u32 *state = bpf_task_storage_get(
+      &task_tracee_map, task, NULL,
+      BPF_LOCAL_STORAGE_GET_F_CREATE); // MUST change
+                                       // BPF_LOCAL_STORAGE_GET_F_CREATE to 0
+                                       // after implemetning state inheritance
+                                       // after fork()
   if (!state)
     return 0;
 
   *state = GO_THREAD_MARKER;
+
+  bpf_printk("New Go stask PID: %d", task->pid);
 
   return 0;
 }
@@ -103,7 +125,7 @@ int trace_entry_point(struct pt_regs *ctx) {
   }
 
   struct task_struct *task = bpf_get_current_task_btf();
-  trace_task(task);
+  trace_task(task, NULL);
 
   bpf_printk("Trace entry point triggered for PID %d. Task added to map.\n",
              current_tgid);
