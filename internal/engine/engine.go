@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"syscall"
 
+	"debug/dwarf"
 	"debug/elf"
 
 	"github.com/cilium/ebpf"
@@ -31,6 +32,12 @@ type Engine struct {
 
 	// links holds all attached eBPF links (probes, tracepoints) for cleanup.
 	links []link.Link
+}
+
+type probeTarget struct {
+	variants []string
+	program  *ebpf.Program
+	isReturn bool
 }
 
 // NewEngine creates and initialises a new Engine with the provided configuration.
@@ -60,7 +67,11 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("opening executable %s: %w", e.config.BinaryPath, err)
 	}
 
-	if err := e.attachGoProbes(); err != nil {
+	if err := e.attachTracingProbes(); err != nil {
+		return err
+	}
+
+	if err := e.attachGoRuntimeProbes(); err != nil {
 		return err
 	}
 
@@ -92,6 +103,14 @@ func (e *Engine) loadBpfObjects() error {
 		return fmt.Errorf("variable 'is_tracing' not found in BPF spec")
 	}
 
+	goidOffset, _ := getGoidOffset(e.config.BinaryPath)
+
+	if v, ok := spec.Variables["goid_offset"]; ok {
+		v.Set(uint64(goidOffset))
+	} else {
+		return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
+	}
+
 	// Set max entries for the state_map
 	if m, ok := spec.Maps["state_map"]; ok {
 		m.MaxEntries = uint32(len(e.config.StateSymbols) + 1)
@@ -101,6 +120,52 @@ func (e *Engine) loadBpfObjects() error {
 		return fmt.Errorf("loading BPF objects: %w", err)
 	}
 	return nil
+}
+
+func getGoidOffset(binaryPath string) (int64, error) {
+	f, err := elf.Open(binaryPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	d, err := f.DWARF()
+	if err != nil {
+		return 0, err
+	}
+
+	reader := d.Reader()
+	for {
+		entry, err := reader.Next()
+		if err != nil || entry == nil {
+			break
+		}
+
+		// skip everything that is not a struct
+		if entry.Tag != dwarf.TagStructType {
+			continue
+		}
+
+		// ask stdlib to parse the complete type
+		typ, err := d.Type(entry.Offset)
+		if err != nil {
+			continue
+		}
+
+		st, ok := typ.(*dwarf.StructType)
+		if !ok || st.StructName != "runtime.g" {
+			continue
+		}
+
+		// iterate already parsed fields — no manual reader needed
+		for _, field := range st.Field {
+			if field.Name == "goid" {
+				return field.ByteOffset, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("goid offset not found in %s", binaryPath)
 }
 
 func (e *Engine) runTarget(ctx context.Context) (int, error) {
@@ -188,18 +253,78 @@ func getOffsetFromVA(f *elf.File, va uint64) (uint64, error) {
 	return 0, fmt.Errorf("cant map virtuall adrees %x to offset", va)
 }
 
-func (e *Engine) attachGoProbes() error {
+func (e *Engine) attachGoRuntimeProbes() error {
+	//Go symbols are in constant change, it is necessary to try multiple variants and keep the list updated
+	probes := []probeTarget{
+		{
+			variants: []string{
+				"runtime.mstart.abi0",
+				"runtime.mstart0",
+				"runtime.mstart",
+			},
+			program: e.bpfObjects.MarkGoThread,
+		},
+		{
+			variants: []string{
+				"runtime.newproc.abi0",
+				"runtime.newproc",
+			},
+			program: e.bpfObjects.TraceNewGoroutine,
+		},
+		{
+			variants: []string{
+				"runtime.newproc1.abi0",
+				"runtime.newproc1",
+			},
+			program: e.bpfObjects.TraceNewGoroutineRet,
+			isReturn: true,
+		},
+		{
+			variants: []string{
+				"runtime.goexit1.abi0",
+				"runtime.goexit1",
+			},
+			program: e.bpfObjects.TraceGoExit,
+		},
+	}
 
-	up, err := e.executable.Uprobe("runtime.mstart.abi0", e.bpfObjects.MarkGoThread, nil)
-	if err != nil {
-		up, err = e.executable.Uprobe("runtime.mstart0", e.bpfObjects.MarkGoThread, nil)
-		if err != nil {
-			return fmt.Errorf("attaching uprobe to runtime.mstart variants: %w", err)
+	for _, probe := range probes {
+		if err := e.tryAttachGoRuntimeProbeVariant(probe); err != nil {
+			return err
 		}
 	}
 
-	e.links = append(e.links, up)
+	return nil
+}
 
+func (e *Engine) tryAttachGoRuntimeProbeVariant(probe probeTarget) error {
+	for _, sym := range probe.variants {
+		var up link.Link
+		var err error
+		
+		if probe.isReturn {
+			up, err = e.executable.Uretprobe(sym, probe.program, nil)
+		} else {
+			up, err = e.executable.Uprobe(sym, probe.program, nil)
+		}
+
+		if err == nil {
+			e.links = append(e.links, up)
+			return nil
+		}
+	}
+	return fmt.Errorf("No variant found for probe targeting %s", probe.variants[0])
+}
+
+func (e *Engine) attachTracingProbes() error {
+
+	l, err := link.AttachTracing(link.TracingOptions{
+		Program: e.bpfObjects.InheritStateInfo,
+	})
+	if err != nil {
+		return fmt.Errorf("attaching sched_process_fork tracepoint: %w", err)
+	}
+	e.links = append(e.links, l)
 	return nil
 }
 
