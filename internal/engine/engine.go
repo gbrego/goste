@@ -266,25 +266,23 @@ func (e *Engine) attachGoRuntimeProbes() error {
 		},
 		{
 			variants: []string{
-				"runtime.newproc.abi0",
 				"runtime.newproc",
+				"runtime.newproc.abi0",
 			},
 			program: e.bpfObjects.TraceNewGoroutine,
 		},
 		{
 			variants: []string{
-				"runtime.newproc1.abi0",
-				"runtime.newproc1",
+				"runtime.runqput",
 			},
-			program: e.bpfObjects.TraceNewGoroutineRet,
-			isReturn: true,
+			program: e.bpfObjects.CompleteTraceNewGoroutine,
 		},
 		{
 			variants: []string{
-				"runtime.goexit1.abi0",
 				"runtime.goexit1",
+				"runtime.goexit1.abi0",
 			},
-			program: e.bpfObjects.TraceGoExit,
+			program: e.bpfObjects.RemoveExitingGoroutine,
 		},
 	}
 
@@ -301,7 +299,7 @@ func (e *Engine) tryAttachGoRuntimeProbeVariant(probe probeTarget) error {
 	for _, sym := range probe.variants {
 		var up link.Link
 		var err error
-		
+
 		if probe.isReturn {
 			up, err = e.executable.Uretprobe(sym, probe.program, nil)
 		} else {

@@ -2,8 +2,6 @@
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
-
-#define bpf_target_x86
 #include <bpf/bpf_tracing.h>
 
 char __license[] SEC("license") = "Dual MIT/GPL";
@@ -175,6 +173,8 @@ int trace_new_goroutine(struct pt_regs *ctx) {
 
   if (state_id) {
     state_to_save = *state_id;
+    bpf_printk("G_ENTRY: found parent goid=%llu in map, state=%d\n",
+               parent_goid, state_to_save);
   } else {
     // bootstrap case, parent is not traced
     struct task_struct *task = bpf_get_current_task_btf();
@@ -186,6 +186,7 @@ int trace_new_goroutine(struct pt_regs *ctx) {
     // whole runtime is compromized and therefore goste is powerless
     if (task_state && *task_state != GO_THREAD_MARKER) {
       state_to_save = *task_state;
+      bpf_printk("G_ENTRY: bootstrap seed from task state=%d\n", state_to_save);
     } else {
       return 0;
     }
@@ -197,8 +198,8 @@ int trace_new_goroutine(struct pt_regs *ctx) {
   return 0;
 }
 
-SEC("uretprobe/trace_new_goroutine_ret")
-int trace_new_goroutine_ret(struct pt_regs *ctx) {
+SEC("uprobe/runtime.runqput")
+int complete_trace_new_goroutine(struct pt_regs *ctx) {
   __u64 tgid_pid = bpf_get_current_pid_tgid();
 
   // Check if we saved a state from the entry probe for this thread
@@ -209,8 +210,8 @@ int trace_new_goroutine_ret(struct pt_regs *ctx) {
   __u32 state_to_save = *state_id;
   bpf_map_delete_elem(&pending_goroutines, &tgid_pid);
 
-  // Read the return value (child *g) from RAX
-  void *child_g = (void *)ctx->ax;
+  // In ABIInternal, the second argument (gp *g) of runqput is in RBX
+  void *child_g = (void *)ctx->bx;
   if (!child_g)
     return 0;
 
@@ -221,14 +222,14 @@ int trace_new_goroutine_ret(struct pt_regs *ctx) {
   struct goroutine_id key = {.tgid = tgid, .goid = child_goid, ._pad = 0};
 
   bpf_map_update_elem(&goroutine_tracee_map, &key, &state_to_save, BPF_ANY);
-  bpf_printk("Inherited state: new goid=%llu, state_id=%d\n", child_goid,
-             state_to_save);
+  bpf_printk("G_RUNQ: goid=%llu, state=%d, tid=%u\n", child_goid, state_to_save,
+             (__u32)tgid_pid);
 
   return 0;
 }
 
-SEC("uprobe/trace_go_exit")
-int trace_go_exit(struct pt_regs *ctx) {
+SEC("uprobe/runtime.goexit1")
+int remove_exiting_goroutine(struct pt_regs *ctx) {
   void *g = (void *)ctx->r14;
   if (!g)
     return 0;
