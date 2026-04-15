@@ -8,6 +8,9 @@ internal/bpf/*.o
 internal/bpf/*_bpfel.go
 internal/bpf/*_bpfeb.go
 
+# generated syscalls
+internal/engine/syscalls_generated.go
+
 # Editor / IDE
 compile_flags.txt
 .vscode/
