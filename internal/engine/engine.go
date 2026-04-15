@@ -67,7 +67,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("opening executable %s: %w", e.config.BinaryPath, err)
 	}
 
-	if err := e.attachTracingProbes(); err != nil {
+	if err := e.attachCommonProbes(); err != nil {
 		return err
 	}
 
@@ -75,16 +75,24 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := e.attachTracingProbes(); err != nil {
+		return err
+	}
+
 	fmt.Printf("Engine ready. Starting target: %s\n", e.config.BinaryPath)
 
-	pid, err := e.runTarget(ctx)
+	pid, done, err := e.runTarget(ctx)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Tracing task with PID: %d\n", pid)
 
-	// Keep the method alive until context is cancelled (e.g. via Ctrl+C)
-	<-ctx.Done()
+	// Wait for either the target to exit or a termination signal (Ctrl+C)
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
+
 	return nil
 }
 
@@ -103,10 +111,16 @@ func (e *Engine) loadBpfObjects() error {
 		return fmt.Errorf("variable 'is_tracing' not found in BPF spec")
 	}
 
-	goidOffset, _ := getGoidOffset(e.config.BinaryPath)
+	goidOffset, err := getGoidOffset(e.config.BinaryPath)
+	if err != nil {
+		return fmt.Errorf("detecting goid offset: %w (ensure binary has DWARF symbols)", err)
+	}
+	fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", goidOffset)
 
 	if v, ok := spec.Variables["goid_offset"]; ok {
-		v.Set(uint64(goidOffset))
+		if err := v.Set(uint64(goidOffset)); err != nil {
+			return fmt.Errorf("setting goid_offset variable: %w", err)
+		}
 	} else {
 		return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
 	}
@@ -168,7 +182,7 @@ func getGoidOffset(binaryPath string) (int64, error) {
 	return 0, fmt.Errorf("goid offset not found in %s", binaryPath)
 }
 
-func (e *Engine) runTarget(ctx context.Context) (int, error) {
+func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 	cmd := exec.CommandContext(ctx, e.config.BinaryPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -179,15 +193,16 @@ func (e *Engine) runTarget(ctx context.Context) (int, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("starting target: %w", err)
+		return 0, nil, fmt.Errorf("starting target: %w", err)
 	}
 
 	pid := cmd.Process.Pid
+	done := make(chan error, 1)
 
 	// Attach uprobe with pid passed to kernel via cookie
 	if err := e.attachEntryPointUprobe(pid); err != nil {
 		syscall.PtraceDetach(pid)
-		return 0, err
+		return 0, nil, err
 	}
 
 	syscall.PtraceDetach(pid)
@@ -195,9 +210,11 @@ func (e *Engine) runTarget(ctx context.Context) (int, error) {
 	go func() {
 		err := cmd.Wait()
 		fmt.Printf("\n[Engine] Target process (PID %d) exited: %v\n", pid, err)
+		done <- err
+		close(done)
 	}()
 
-	return pid, nil
+	return pid, done, nil
 }
 
 // initEmptyMaps populates the eBPF maps with initial empty values where necessary.
@@ -314,13 +331,43 @@ func (e *Engine) tryAttachGoRuntimeProbeVariant(probe probeTarget) error {
 	return fmt.Errorf("No variant found for probe targeting %s", probe.variants[0])
 }
 
-func (e *Engine) attachTracingProbes() error {
+// needed in both tracing and enforcment mode
+func (e *Engine) attachCommonProbes() error {
 
 	l, err := link.AttachTracing(link.TracingOptions{
 		Program: e.bpfObjects.InheritStateInfo,
 	})
 	if err != nil {
 		return fmt.Errorf("attaching sched_process_fork tracepoint: %w", err)
+	}
+	e.links = append(e.links, l)
+
+	// Attach state transition triggers if symbols are provided
+	if len(e.config.StateSymbols) > 0 {
+		cookies := make([]uint64, len(e.config.StateSymbols))
+		for i := range cookies {
+			cookies[i] = uint64(i)
+		}
+
+		fmt.Printf("[Engine] Attaching state triggers to symbols: %v\n", e.config.StateSymbols)
+		um, err := e.executable.UprobeMulti(e.config.StateSymbols, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
+			Cookies: cookies,
+		})
+		if err != nil {
+			return fmt.Errorf("attaching state transition uprobes (ensure symbols exist in binary): %w", err)
+		}
+		e.links = append(e.links, um)
+	}
+
+	return nil
+}
+
+func (e *Engine) attachTracingProbes() error {
+	l, err := link.AttachTracing(link.TracingOptions{
+		Program: e.bpfObjects.MonitorSyscallEvent,
+	})
+	if err != nil {
+		return fmt.Errorf("attaching sys_enter tracepoint: %w", err)
 	}
 	e.links = append(e.links, l)
 	return nil

@@ -6,8 +6,12 @@
 
 char __license[] SEC("license") = "Dual MIT/GPL";
 
-// task_state_map value for go threads
+/* From arch/x86/include/asm/thread_info.h */
+#define TS_COMPAT 0x0002 /* 32bit syscall active (64BIT) */
+
+/* task_state_map marker for go threads */
 #define GO_THREAD_MARKER 0xFFFFFFFF
+
 #define NOF_SYSCALLS 512
 #define MAX_STATES 16
 
@@ -155,20 +159,34 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   return 0;
 }
 
-SEC("uprobe/trace_new_goroutine")
-int trace_new_goroutine(struct pt_regs *ctx) {
-  void *parent_g = (void *)ctx->r14;
-  if (!parent_g)
+/* Recover goid from a goroutine pointer */
+static __always_inline __u64 get_goid(void *g) {
+  __u64 goid = 0;
+  if (!g)
     return 0;
 
-  __u64 parent_goid;
-  bpf_probe_read_user(&parent_goid, sizeof(parent_goid),
-                      parent_g + goid_offset);
+  bpf_probe_read_user(&goid, sizeof(goid), g + goid_offset);
+  return goid;
+}
+
+static __always_inline __u32 *get_goroutine_state_id(struct pt_regs *regs) {
+  __u64 goid = get_goid((void *)regs->r14);
+  if (!goid)
+    return NULL;
 
   __u32 tgid = bpf_get_current_pid_tgid() >> 32;
-  struct goroutine_id key = {.tgid = tgid, .goid = parent_goid, ._pad = 0};
+  struct goroutine_id key = {.tgid = tgid, .goid = goid, ._pad = 0};
 
+  return bpf_map_lookup_elem(&goroutine_tracee_map, &key);
+}
+
+SEC("uprobe/trace_new_goroutine")
+int trace_new_goroutine(struct pt_regs *ctx) {
+  __u64 parent_goid = get_goid((void *)ctx->r14);
+  __u32 tgid = bpf_get_current_pid_tgid() >> 32;
   __u32 state_to_save;
+
+  struct goroutine_id key = {.tgid = tgid, .goid = parent_goid, ._pad = 0};
   __u32 *state_id = bpf_map_lookup_elem(&goroutine_tracee_map, &key);
 
   if (state_id) {
@@ -211,12 +229,9 @@ int complete_trace_new_goroutine(struct pt_regs *ctx) {
   bpf_map_delete_elem(&pending_goroutines, &tgid_pid);
 
   // In ABIInternal, the second argument (gp *g) of runqput is in RBX
-  void *child_g = (void *)ctx->bx;
-  if (!child_g)
+  __u64 child_goid = get_goid((void *)ctx->bx);
+  if (!child_goid)
     return 0;
-
-  __u64 child_goid;
-  bpf_probe_read_user(&child_goid, sizeof(child_goid), child_g + goid_offset);
 
   __u32 tgid = tgid_pid >> 32;
   struct goroutine_id key = {.tgid = tgid, .goid = child_goid, ._pad = 0};
@@ -230,18 +245,208 @@ int complete_trace_new_goroutine(struct pt_regs *ctx) {
 
 SEC("uprobe/runtime.goexit1")
 int remove_exiting_goroutine(struct pt_regs *ctx) {
-  void *g = (void *)ctx->r14;
-  if (!g)
+  __u64 goid = get_goid((void *)ctx->r14);
+  if (!goid)
     return 0;
-
-  __u64 goid;
-  bpf_probe_read_user(&goid, sizeof(goid), g + goid_offset);
 
   __u32 tgid = bpf_get_current_pid_tgid() >> 32;
   struct goroutine_id key = {.tgid = tgid, .goid = goid, ._pad = 0};
 
   // Clean up goroutine state when it exits
   bpf_map_delete_elem(&goroutine_tracee_map, &key);
+
+  return 0;
+}
+
+/*
+ * INHERITED AND MODIFIED FROM SYSCOMB
+ * Get the syscall bitmap of the current task or goroutine
+ */
+static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
+                                                      u8 **syscalls) {
+  struct task_struct *task = bpf_get_current_task_btf();
+  u32 *state_id = NULL;
+  struct app_state *state;
+
+  // Get application state from the tracee map
+  state_id = bpf_task_storage_get(&task_tracee_map, task, NULL, 0);
+
+  if (state_id /* is tracee */) {
+
+    if (*state_id == GO_THREAD_MARKER) {
+      state_id = get_goroutine_state_id(regs);
+      if (!state_id)
+        return 0;
+    }
+
+    state = bpf_map_lookup_elem(&state_map, state_id);
+    if (!state) {
+      bpf_printk("Error retrieving application state");
+      return 1;
+    }
+
+    *syscalls = state->syscalls;
+    return 0;
+  }
+
+  /* To be implemnted when tracing live tasks (as of now target is hardcoded and
+  started by goste itself)
+
+  if (to_trace(task->pid, task->tgid)) {
+      success = add_tracee(task, NULL, NULL);
+      state = bpf_map_lookup_elem(&state_map, &root_state_id);
+      if (!success || !state) {
+          bpf_printk("Error adding task to the tracee task set");
+          return 1;
+      }
+
+      *syscalls = state->syscalls;
+      return 0;
+  }
+  */
+
+  return 0;
+}
+
+/*
+ * INHERITED FROM SYSCOMB
+ *
+ * Monitor system call invocation to generate and enforce syscall filters.
+ *
+ * program is attached to syscall entry tracepoint only when generating
+ * the filters.
+ */
+
+SEC("tp_btf/sys_enter")
+void BPF_PROG(monitor_syscall_event, struct pt_regs *regs, long syscall_id) {
+  u8 *syscalls;
+  int err;
+  struct task_struct *task;
+
+  err = get_current_syscall_bitmap(regs, &syscalls);
+  if (err || !syscalls /* non-tracee tasks */) {
+    return;
+  }
+
+  // Tracee task
+
+  // This is what seccomp does to distinguish 32-bit syscalls belonging to
+  // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs
+  // (see: arch/x86/include/asm/syscall.h#L167)
+  task = bpf_get_current_task_btf();
+  if (task->thread_info.status & TS_COMPAT) {
+    // i386 ABI
+    bpf_printk("Syscalls belonging to the i386 architecture are not "
+               "supported");
+    return;
+  }
+
+  // x86_64 or x32 ABI
+  if (syscall_id >= NOF_SYSCALLS) {
+    bpf_printk("Error invalid syscall number: %ld", syscall_id);
+  } else if (syscall_id >= 0 && syscall_id < NOF_SYSCALLS) {
+    if (is_tracing) {
+      syscalls[syscall_id] = true;
+      // too keep if light enforce log only option will be implemented
+    } else if (!syscalls[syscall_id]) {
+      bpf_printk("Syscall filter violation: syscall %d", syscall_id);
+    }
+  }
+}
+
+/*
+ * INHERITED AND MODIFIED FROM SYSCOMB
+ * Keep track of the transition between application states
+ */
+static int register_transition(u32 from, u32 to) {
+  struct app_state *state;
+
+  state = bpf_map_lookup_elem(&state_map, &from);
+  if (!state) {
+    bpf_printk("Error retrieving application state");
+    return 1;
+  }
+
+  if (to >= MAX_STATES) {
+    bpf_printk("Error state identifier exceeds the maximum number of "
+               "states");
+    return 1;
+  }
+
+  state->next_state[to] = true;
+
+  return 0;
+}
+
+/*
+ * INHERITED AND MODIFIED FROM SYSCOMB
+ * Generic trigger representing a one-way application state transition.
+ *
+ * By keeping track of the application state transitions we can then replicate
+ * the expected behavior of seccomp. Specifically, we can enforce syscall
+ * filters that go from broader to stricter never allowing to acquire privileges
+ * by moving to the next filter
+ */
+SEC("uprobe.multi")
+int trigger_state_transition(struct pt_regs *ctx) {
+  struct task_struct *task = bpf_get_current_task_btf();
+  u32 *state_id, next_state_id;
+  int err;
+
+  state_id = bpf_task_storage_get(&task_tracee_map, task, NULL, 0);
+
+  if (state_id) {
+    next_state_id = bpf_get_attach_cookie(ctx) + 1;
+
+    if (is_tracing) {
+
+      if (*state_id == GO_THREAD_MARKER) {
+        state_id = get_goroutine_state_id(ctx);
+        if (!state_id) {
+          return 0;
+        }
+      }
+
+      err = register_transition(*state_id, next_state_id);
+      if (err) {
+        bpf_printk("Error registering application state transition");
+        return 1;
+      }
+    }
+    /* enforcment part
+    else {
+      if (!is_valid_transition(*state_id, next_state_id)) {
+        if (is_child_process || *state_id) {
+          bpf_printk("Flow integrity violation: invalid transition "
+                     "from %d to %d",
+                     *state_id, next_state_id);
+          bpf_send_signal_thread(SIGKILL);
+          return 1;
+        } else {
+          bpf_printk("Flow integrity warning: invalid transition "
+                     "from 0 to %d",
+                     next_state_id);
+        }
+      }
+    }
+    */
+
+    *state_id = next_state_id;
+
+    return 0;
+  }
+
+  /* to be implemented when tracing live tasks
+  if (to_trace(task->pid, task->tgid)) {
+    next_state_id = bpf_get_attach_cookie(ctx) + 1;
+    success = add_seccomp_tracee(task, &next_state_id);
+    if (!success) {
+      bpf_printk("Error adding task to the tracee task set");
+      return 1;
+    }
+    return 0;
+  }
+  */
 
   return 0;
 }

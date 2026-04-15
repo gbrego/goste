@@ -20,7 +20,7 @@ func main() {
 	// }
 	// targetPath := os.Args[1]
 
-	targetPath := "/home/brego/Documents/Uni/Tesi/sampleTargets/target"
+	targetPath := "/home/brego/Documents/Uni/Tesi/sampleTargets/target2"
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -29,7 +29,7 @@ func main() {
 	e, err := engine.NewEngine(engine.Config{
 		BinaryPath:   targetPath,
 		IsTracing:    true,
-		StateSymbols: []string{}, //no state changes for now
+		StateSymbols: []string{"main.StateA", "main.StateB"},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
