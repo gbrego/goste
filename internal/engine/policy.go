@@ -37,8 +37,6 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 	stateMap := make(map[uint32]bpf.GosteAppState)
 	var val bpf.GosteAppState
 
-	// Read all entries from the StateMap
-	// Note: state_map is an array of size len(StateSymbols) + 1
 	numStates := uint32(len(e.config.StateSymbols) + 1)
 	for i := uint32(0); i < numStates; i++ {
 		if err := e.bpfObjects.StateMap.Lookup(i, &val); err == nil {
@@ -46,7 +44,6 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 		}
 	}
 
-	// Run back-propagation algorithm
 	finalizedSyscalls, nextStates := flowBasedBackpropagation(stateMap, numStates)
 
 	policy := &Policy{
@@ -60,149 +57,103 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 			Syscalls: syscallsToNames(finalizedSyscalls[i]),
 			Next:     nextStates[i],
 		}
-
-		// Add probe info if applicable
 		if i > 0 && i-1 < uint32(len(e.config.StateSymbols)) {
-			state.Probe = &Probe{
-				Symbol: e.config.StateSymbols[i-1],
-			}
+			state.Probe = &Probe{Symbol: e.config.StateSymbols[i-1]}
 		}
-
 		policy.States = append(policy.States, state)
 	}
 
 	return policy, nil
 }
 
-// flowBasedBackpropagation implements Kosaraju's algorithm for SCCs and bitwise-OR propagation.
-func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, numStates uint32) (map[uint32][]bool, map[uint32][]uint32) {
-	// 1. Build adjacency list and transposed graph
-	adj := make([][]uint32, numStates)
-	revAdj := make([][]uint32, numStates)
-	syscalls := make(map[uint32][]bool)
+// flowBasedBackpropagation implements a leaner version of Kosaraju's algorithm 
+// with in-place back-propagation, mirroring SysComb's logic.
+func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32) (map[uint32][]bool, [][]uint32) {
+	adj := make([][]uint32, num)
+	rev := make([][]uint32, num)
+	perms := make([][]bool, num)
 
-	for i := uint32(0); i < numStates; i++ {
-		appState := stateMap[i]
-
-		// Fill initial syscalls
-		sSet := make([]bool, 512)
+	for i := uint32(0); i < num; i++ {
+		s := stateMap[i]
+		perms[i] = make([]bool, 512)
 		for j := 0; j < 512; j++ {
-			if appState.Syscalls[j] != 0 {
-				sSet[j] = true
-			}
+			if s.Syscalls[j] != 0 { perms[i][j] = true }
 		}
-		syscalls[i] = sSet
-
-		// Fill edges
 		for j := uint32(0); j < 16; j++ {
-			if appState.NextState[j] != 0 {
+			if s.NextState[j] != 0 {
 				adj[i] = append(adj[i], j)
-				revAdj[j] = append(revAdj[j], i)
+				rev[j] = append(rev[j], i)
 			}
 		}
 	}
 
-	// 2. Kosaraju's Phase 1: DFS for finish times
-	visited := make([]bool, numStates)
-	stack := make([]uint32, 0)
+	// Phase 1: DFS for finish times
+	visited := make([]bool, num)
+	stack := make([]uint32, 0, num)
 	var dfs1 func(uint32)
 	dfs1 = func(u uint32) {
 		visited[u] = true
 		for _, v := range adj[u] {
-			if !visited[v] {
-				dfs1(v)
-			}
+			if !visited[v] { dfs1(v) }
 		}
 		stack = append(stack, u)
 	}
-	for i := uint32(0); i < numStates; i++ {
-		if !visited[i] {
-			dfs1(i)
-		}
+	for i := uint32(0); i < num; i++ {
+		if !visited[i] { dfs1(i) }
 	}
 
-	// 3. Kosaraju's Phase 2: DFS on transposed graph for SCCs
-	visited = make([]bool, numStates)
-	sccs := make([][]uint32, 0)
-	var currentSCC []uint32
-	var dfs2 func(uint32)
-	dfs2 = func(u uint32) {
-		visited[u] = true
-		currentSCC = append(currentSCC, u)
-		for _, v := range revAdj[u] {
-			if !visited[v] {
-				dfs2(v)
-			}
-		}
-	}
+	// Phase 2: DFS on transposed graph + direct propagation
+	visited = make([]bool, num)
+	roots := make([]uint32, num)
+	finalPerms := make(map[uint32][]bool)
 
-	nodeToSCC := make([]int, numStates)
-	for i := len(stack) - 1; i >= 0; i-- {
+	for i := int(num) - 1; i >= 0; i-- {
 		u := stack[i]
 		if !visited[u] {
-			currentSCC = make([]uint32, 0)
+			component := make([]uint32, 0)
+			var dfs2 func(uint32)
+			dfs2 = func(curr uint32) {
+				visited[curr] = true
+				component = append(component, curr)
+				for _, prev := range rev[curr] {
+					if !visited[prev] { dfs2(prev) }
+				}
+			}
 			dfs2(u)
-			sccIdx := len(sccs)
-			for _, node := range currentSCC {
-				nodeToSCC[node] = sccIdx
-			}
-			sccs = append(sccs, currentSCC)
-		}
-	}
 
-	// 4. Merge syscalls within each SCC
-	sccSyscalls := make([][]bool, len(sccs))
-	for i, scc := range sccs {
-		merged := make([]bool, 512)
-		for _, node := range scc {
-			for j := 0; j < 512; j++ {
-				if syscalls[node][j] {
-					merged[j] = true
+			// Merge and back-propagate
+			root := component[0]
+			merged := make([]bool, 512)
+			for _, node := range component {
+				roots[node] = root
+				for j := 0; j < 512; j++ {
+					if perms[node][j] { merged[j] = true }
 				}
 			}
-		}
-		sccSyscalls[i] = merged
-	}
 
-	// 5. Build condensation graph (DAG of SCCs)
-	sccAdj := make([]map[int]bool, len(sccs))
-	for i := range sccAdj {
-		sccAdj[i] = make(map[int]bool)
-	}
-	for u := uint32(0); u < numStates; u++ {
-		uSCC := nodeToSCC[u]
-		for _, v := range adj[u] {
-			vSCC := nodeToSCC[v]
-			if uSCC != vSCC {
-				sccAdj[uSCC][vSCC] = true
-			}
-		}
-	}
+			// Apply merged profile to SCC members
+			for _, node := range component { perms[node] = merged }
 
-	// 6. Back-propagation across the condensation graph
-	// We need to process SCCs in reverse topological order.
-	// In Kosaraju's, the order in which we find SCCs (Phase 2) is a topological sort of the condensation graph.
-	// So we process from the last found SCC to the first.
-	for i := len(sccs) - 1; i >= 0; i-- {
-		for neighborSCC := range sccAdj[i] {
-			// Propagate from neighbor to current: Perm(i) |= Perm(neighbor)
-			for j := 0; j < 512; j++ {
-				if sccSyscalls[neighborSCC][j] {
-					sccSyscalls[i][j] = true
+			// Back-propagate to all states that transition to this SCC
+			for _, node := range component {
+				for prev := uint32(0); prev < num; prev++ {
+					// If there is an edge prev -> node AND prev is not in the same SCC
+					isEdge := false
+					for _, next := range adj[prev] {
+						if next == node { isEdge = true; break }
+					}
+					if isEdge && roots[prev] != root {
+						for j := 0; j < 512; j++ {
+							if merged[j] { perms[prev][j] = true }
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// 7. Map back to original nodes
-	finalizedSyscalls := make(map[uint32][]bool)
-	nextStates := make(map[uint32][]uint32)
-	for u := uint32(0); u < numStates; u++ {
-		finalizedSyscalls[u] = sccSyscalls[nodeToSCC[u]]
-		nextStates[u] = adj[u]
-	}
-
-	return finalizedSyscalls, nextStates
+	for i := uint32(0); i < num; i++ { finalPerms[i] = perms[i] }
+	return finalPerms, adj
 }
 
 func syscallsToNames(bitmap []bool) []string {
@@ -241,13 +192,9 @@ func (p *Policy) PrintPolicy() {
 		fmt.Printf("\n  Allowed Syscalls (%d):\n", len(s.Syscalls))
 		for i, name := range s.Syscalls {
 			fmt.Printf("    %-15s", name)
-			if (i+1)%4 == 0 {
-				fmt.Println()
-			}
+			if (i+1)%4 == 0 { fmt.Println() }
 		}
-		if len(s.Syscalls)%4 != 0 {
-			fmt.Println()
-		}
+		if len(s.Syscalls)%4 != 0 { fmt.Println() }
 		fmt.Printf("  Next States: %v\n", s.Next)
 	}
 	fmt.Printf("\n--- End of Policy ---\n")
