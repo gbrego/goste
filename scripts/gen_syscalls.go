@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -65,21 +66,26 @@ func main() {
 	fmt.Fprintln(outFile, "")
 	fmt.Fprintln(outFile, "var GeneratedSyscalls = map[int]string{")
 
-	// We want to sort them by ID for a cleaner file
-	var ids []string
-	for id := range syscalls {
-		ids = append(ids, id)
+	// We want to sort them numerically by ID for a cleaner and deterministic file
+	var sortedIDs []int
+	for idStr := range syscalls {
+		var id int
+		fmt.Sscanf(idStr, "%d", &id)
+		sortedIDs = append(sortedIDs, id)
 	}
-	for _, id := range ids {
-		fmt.Fprintf(outFile, "\t%s: \"%s\",\n", id, syscalls[id])
+	sort.Ints(sortedIDs)
+
+	for _, id := range sortedIDs {
+		fmt.Fprintf(outFile, "\t%d: \"%s\",\n", id, syscalls[fmt.Sprintf("%d", id)])
 	}
 
 	fmt.Fprintln(outFile, "}")
 	fmt.Fprintln(outFile, "")
 	fmt.Fprintln(outFile, "var GeneratedSyscallsByName = map[string]int{")
 
-	for _, id := range ids {
-		fmt.Fprintf(outFile, "\t\"%s\": %s,\n", syscalls[id], id)
+	for _, id := range sortedIDs {
+		name := syscalls[fmt.Sprintf("%d", id)]
+		fmt.Fprintf(outFile, "\t\"%s\": %d,\n", name, id)
 	}
 
 	fmt.Fprintln(outFile, "}")

@@ -28,6 +28,9 @@ const (
 	ActionLog   uint32 = 0
 	ActionErrno uint32 = 1
 	ActionKill  uint32 = 2
+
+	MaxSyscalls = 512
+	MaxStates   = 16
 )
 
 type Engine struct {
@@ -210,10 +213,12 @@ func getGoidOffset(binaryPath string) (int64, error) {
 	return 0, fmt.Errorf("goid offset not found in %s", binaryPath)
 }
 
+// This function is to be skipped when attaching to a live process (PID provided by user)
 func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 	cmd := exec.CommandContext(ctx, e.config.BinaryPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
 
 	// CONCEPT: ask kernel to stop task right after syscall 'exec'
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -226,6 +231,13 @@ func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 
 	pid := cmd.Process.Pid
 	done := make(chan error, 1)
+
+	// Ptrace synchronization: wait for the initial stop signal (SIGTRAP) at execve.
+	// This prevents cmd.Wait() from catching it by mistake and thinking the target crashed.
+	var ws syscall.WaitStatus
+	if _, err := syscall.Wait4(pid, &ws, syscall.WSTOPPED, nil); err != nil {
+		return 0, nil, fmt.Errorf("waiting for ptrace trap: %w", err)
+	}
 
 	// Attach uprobe with pid passed to kernel via cookie
 	if err := e.attachEntryPointUprobe(pid); err != nil {

@@ -66,7 +66,7 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 	return policy, nil
 }
 
-// flowBasedBackpropagation implements a leaner version of Kosaraju's algorithm 
+// flowBasedBackpropagation implements a leaner version of Kosaraju's algorithm
 // with in-place back-propagation, mirroring SysComb's logic.
 func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32) (map[uint32][]bool, [][]uint32) {
 	adj := make([][]uint32, num)
@@ -75,11 +75,13 @@ func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32)
 
 	for i := uint32(0); i < num; i++ {
 		s := stateMap[i]
-		perms[i] = make([]bool, 512)
-		for j := 0; j < 512; j++ {
-			if s.Syscalls[j] != 0 { perms[i][j] = true }
+		perms[i] = make([]bool, MaxSyscalls)
+		for j := 0; j < MaxSyscalls; j++ {
+			if s.Syscalls[j] != 0 {
+				perms[i][j] = true
+			}
 		}
-		for j := uint32(0); j < 16; j++ {
+		for j := uint32(0); j < MaxStates; j++ {
 			if s.NextState[j] != 0 {
 				adj[i] = append(adj[i], j)
 				rev[j] = append(rev[j], i)
@@ -87,64 +89,73 @@ func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32)
 		}
 	}
 
-	// Phase 1: DFS for finish times
+	// Phase 1: DFS on REVERSED graph to fill stack (SysComb style)
 	visited := make([]bool, num)
 	stack := make([]uint32, 0, num)
-	var dfs1 func(uint32)
-	dfs1 = func(u uint32) {
+	var dfsPhase1 func(uint32)
+	dfsPhase1 = func(u uint32) {
 		visited[u] = true
-		for _, v := range adj[u] {
-			if !visited[v] { dfs1(v) }
+		for _, v := range rev[u] {
+			if !visited[v] {
+				dfsPhase1(v)
+			}
 		}
 		stack = append(stack, u)
 	}
 	for i := uint32(0); i < num; i++ {
-		if !visited[i] { dfs1(i) }
+		if !visited[i] {
+			dfsPhase1(i)
+		}
 	}
 
-	// Phase 2: DFS on transposed graph + direct propagation
+	// Phase 2: DFS on ORIGINAL graph + immediate predecessor propagation
 	visited = make([]bool, num)
 	roots := make([]uint32, num)
-	finalPerms := make(map[uint32][]bool)
+	for i := uint32(0); i < num; i++ {
+		roots[i] = num + 1 // Sentinel
+	}
 
 	for i := int(num) - 1; i >= 0; i-- {
 		u := stack[i]
 		if !visited[u] {
 			component := make([]uint32, 0)
-			var dfs2 func(uint32)
-			dfs2 = func(curr uint32) {
+			var dfsPhase2 func(uint32)
+			dfsPhase2 = func(curr uint32) {
 				visited[curr] = true
 				component = append(component, curr)
-				for _, prev := range rev[curr] {
-					if !visited[prev] { dfs2(prev) }
+				for _, next := range adj[curr] {
+					if !visited[next] {
+						dfsPhase2(next)
+					}
 				}
 			}
-			dfs2(u)
+			dfsPhase2(u)
 
-			// Merge and back-propagate
+			// Merge syscall profiles of states belonging to the same SCC
 			root := component[0]
-			merged := make([]bool, 512)
+			merged := make([]bool, MaxSyscalls)
 			for _, node := range component {
 				roots[node] = root
-				for j := 0; j < 512; j++ {
-					if perms[node][j] { merged[j] = true }
+				for j := 0; j < MaxSyscalls; j++ {
+					if perms[node][j] {
+						merged[j] = true
+					}
 				}
 			}
 
 			// Apply merged profile to SCC members
-			for _, node := range component { perms[node] = merged }
-
-			// Back-propagate to all states that transition to this SCC
 			for _, node := range component {
-				for prev := uint32(0); prev < num; prev++ {
-					// If there is an edge prev -> node AND prev is not in the same SCC
-					isEdge := false
-					for _, next := range adj[prev] {
-						if next == node { isEdge = true; break }
-					}
-					if isEdge && roots[prev] != root {
-						for j := 0; j < 512; j++ {
-							if merged[j] { perms[prev][j] = true }
+				perms[node] = merged
+			}
+
+			// Back-propagate the merged profile to all predecessors of the SCC
+			for _, node := range component {
+				for _, prev := range rev[node] {
+					if roots[prev] != root {
+						for j := 0; j < MaxSyscalls; j++ {
+							if merged[j] {
+								perms[prev][j] = true
+							}
 						}
 					}
 				}
@@ -152,8 +163,11 @@ func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32)
 		}
 	}
 
-	for i := uint32(0); i < num; i++ { finalPerms[i] = perms[i] }
-	return finalPerms, adj
+	resPerms := make(map[uint32][]bool)
+	for i := uint32(0); i < num; i++ {
+		resPerms[i] = perms[i]
+	}
+	return resPerms, adj
 }
 
 func syscallsToNames(bitmap []bool) []string {
@@ -195,6 +209,26 @@ func LoadPolicy(path string) (*Policy, error) {
 	return &p, nil
 }
 
+// GetStateSymbols extracts the ordered list of probe symbols from the policy.
+// It assumes state IDs are sequential starting from 0, and that probes
+// corresponding to transitions start from State 1.
+func (p *Policy) GetStateSymbols() []string {
+	// Sort states by ID to ensure correct transition order
+	sortedStates := make([]State, len(p.States))
+	copy(sortedStates, p.States)
+	sort.Slice(sortedStates, func(i, j int) bool {
+		return sortedStates[i].ID < sortedStates[j].ID
+	})
+
+	var symbols []string
+	for _, s := range sortedStates {
+		if s.Probe != nil && s.Probe.Symbol != "" {
+			symbols = append(symbols, s.Probe.Symbol)
+		}
+	}
+	return symbols
+}
+
 // MapToBPFStates converts the user-facing Policy structure into kernel-compatible
 // BPF app_state structures for map population.
 func (p *Policy) MapToBPFStates() (map[uint32]bpf.GosteAppState, error) {
@@ -209,15 +243,15 @@ func (p *Policy) MapToBPFStates() (map[uint32]bpf.GosteAppState, error) {
 			if !ok {
 				return nil, fmt.Errorf("unknown syscall name in policy: %s", name)
 			}
-			if id >= 0 && id < 512 {
+			if id >= 0 && id < MaxSyscalls {
 				appState.Syscalls[id] = 1
 			}
 		}
 
 		// 2. Map Next states
 		for _, nextID := range s.Next {
-			if nextID >= 16 {
-				return nil, fmt.Errorf("state ID %d exceeds MAX_STATES (16)", nextID)
+			if nextID >= MaxStates {
+				return nil, fmt.Errorf("state ID %d exceeds MAX_STATES (%d)", nextID, MaxStates)
 			}
 			appState.NextState[nextID] = 1
 		}
@@ -240,9 +274,13 @@ func (p *Policy) PrintPolicy() {
 		fmt.Printf("\n  Allowed Syscalls (%d):\n", len(s.Syscalls))
 		for i, name := range s.Syscalls {
 			fmt.Printf("    %-15s", name)
-			if (i+1)%4 == 0 { fmt.Println() }
+			if (i+1)%4 == 0 {
+				fmt.Println()
+			}
 		}
-		if len(s.Syscalls)%4 != 0 { fmt.Println() }
+		if len(s.Syscalls)%4 != 0 {
+			fmt.Println()
+		}
 		fmt.Printf("  Next States: %v\n", s.Next)
 	}
 	fmt.Printf("\n--- End of Policy ---\n")

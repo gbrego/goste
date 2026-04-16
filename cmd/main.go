@@ -133,6 +133,8 @@ func runEnforce() {
 		os.Exit(1)
 	}
 
+	stateSymbols := policy.GetStateSymbols()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -141,6 +143,7 @@ func runEnforce() {
 		IsTracing:     false,
 		EnforceAction: actionID,
 		Policy:        policy,
+		StateSymbols:  stateSymbols,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)

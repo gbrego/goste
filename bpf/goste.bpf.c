@@ -390,10 +390,17 @@ static int register_transition(u32 from, u32 to) {
   return 0;
 }
 
-/* INHERITED FROM SYSCOMB
+/* INHERITED AND MODIFIED FROM SYSCOMB
  * Check validity of the application state transition
  */
 static int is_valid_transition(u32 from, u32 to) {
+  // Asuming self transition only happens when a go preomption or stack growth
+  // algorithm stops the goroutine and resumes it later making it hit the same
+  // uprobe twice, besides, this check makes sense anyway, still there could be
+  // something strange happening that gets ignore by this
+  if (from == to) {
+    return 1;
+  }
   struct app_state *state;
 
   state = bpf_map_lookup_elem(&state_map, &from);
@@ -403,8 +410,7 @@ static int is_valid_transition(u32 from, u32 to) {
   }
 
   if (to >= MAX_STATES) {
-    bpf_printk("Error state identifier exceeds the maximum number of "
-               "states");
+    bpf_printk("Error state identifier exceeds the maximum number of states");
     return 0;
   }
 
@@ -431,14 +437,14 @@ int trigger_state_transition(struct pt_regs *ctx) {
   if (state_id) {
     next_state_id = bpf_get_attach_cookie(ctx) + 1;
 
-    if (is_tracing) {
-
-      if (*state_id == GO_THREAD_MARKER) {
-        state_id = get_goroutine_state_id(ctx);
-        if (!state_id) {
-          return 0;
-        }
+    if (*state_id == GO_THREAD_MARKER) {
+      state_id = get_goroutine_state_id(ctx);
+      if (!state_id) {
+        return 0;
       }
+    }
+
+    if (is_tracing) {
 
       err = register_transition(*state_id, next_state_id);
       if (err) {
@@ -446,18 +452,14 @@ int trigger_state_transition(struct pt_regs *ctx) {
         return 1;
       }
     } else {
-
       if (!is_valid_transition(*state_id, next_state_id)) {
         if (is_child_process || *state_id) {
-          bpf_printk("Flow integrity violation: invalid transition "
-                     "from %d to %d",
-                     *state_id, next_state_id);
+          bpf_printk("Flow integrity violation from %d to %d", *state_id,
+                     next_state_id);
           bpf_send_signal(SIGKILL);
           return 1;
         } else {
-          bpf_printk("Flow integrity warning: invalid transition "
-                     "from 0 to %d",
-                     next_state_id);
+          bpf_printk("Flow integrity warning from 0 to %d", next_state_id);
         }
       }
     }
