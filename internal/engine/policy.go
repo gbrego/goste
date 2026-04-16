@@ -180,6 +180,54 @@ func (p *Policy) WritePolicyToFile(path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// LoadPolicy reads a Policy from a JSON file.
+func LoadPolicy(path string) (*Policy, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read policy file: %v", err)
+	}
+
+	var p Policy
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal policy: %v", err)
+	}
+
+	return &p, nil
+}
+
+// MapToBPFStates converts the user-facing Policy structure into kernel-compatible
+// BPF app_state structures for map population.
+func (p *Policy) MapToBPFStates() (map[uint32]bpf.GosteAppState, error) {
+	bpfStates := make(map[uint32]bpf.GosteAppState)
+
+	for _, s := range p.States {
+		appState := bpf.GosteAppState{}
+
+		// 1. Map Syscall names back to IDs
+		for _, name := range s.Syscalls {
+			id, ok := GeneratedSyscallsByName[name]
+			if !ok {
+				return nil, fmt.Errorf("unknown syscall name in policy: %s", name)
+			}
+			if id >= 0 && id < 512 {
+				appState.Syscalls[id] = 1
+			}
+		}
+
+		// 2. Map Next states
+		for _, nextID := range s.Next {
+			if nextID >= 16 {
+				return nil, fmt.Errorf("state ID %d exceeds MAX_STATES (16)", nextID)
+			}
+			appState.NextState[nextID] = 1
+		}
+
+		bpfStates[s.ID] = appState
+	}
+
+	return bpfStates, nil
+}
+
 // PrintPolicy prints the policy object to stdout in a human-readable format.
 func (p *Policy) PrintPolicy() {
 	fmt.Printf("\n--- Finalized Policy Graph ---\n")

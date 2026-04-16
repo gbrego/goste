@@ -6,54 +6,82 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"goste/internal/engine"
 )
 
 func main() {
-	fmt.Println("Starting GoSTE (Go State Trace & Enforce)...")
-
-	outputFlag := flag.String("o", "", "Path to the output JSON policy file")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <binary-to-trace>\n", os.Args[0])
-		flag.PrintDefaults()
-	}
-	flag.Parse()
-
-	if flag.NArg() < 1 {
-		flag.Usage()
+	if len(os.Args) < 2 {
+		printUsage()
 		os.Exit(1)
 	}
 
-	targetPath := flag.Arg(0)
+	subcommand := os.Args[1]
+	switch subcommand {
+	case "trace":
+		runTrace()
+	case "enforce":
+		runEnforce()
+	case "help", "-h", "--help":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcommand)
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println("Usage: goste <subcommand> [options]")
+	fmt.Println("\nSubcommands:")
+	fmt.Println("  trace   Trace application states and syscalls to generate a policy")
+	fmt.Println("  enforce Enforce a previously generated security policy")
+	fmt.Println("\nRun 'goste <subcommand> -h' for more details on each subcommand.")
+}
+
+func runTrace() {
+	traceCmd := flag.NewFlagSet("trace", flag.ExitOnError)
+	outputFlag := traceCmd.String("o", "", "Path to the output JSON policy file")
+	symbolsFlag := traceCmd.String("s", "", "Comma-separated list of symbols to trace for state transitions")
+
+	traceCmd.Parse(os.Args[2:])
+
+	if traceCmd.NArg() < 1 {
+		fmt.Println("Usage: goste trace [options] <binary-to-trace>")
+		traceCmd.PrintDefaults()
+		os.Exit(1)
+	}
+
+	targetPath := traceCmd.Arg(0)
+	var stateSymbols []string
+	if *symbolsFlag != "" {
+		stateSymbols = strings.Split(*symbolsFlag, ",")
+		for i := range stateSymbols {
+			stateSymbols[i] = strings.TrimSpace(stateSymbols[i])
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize the engine (Attacher/Linker)
 	e, err := engine.NewEngine(engine.Config{
 		BinaryPath:   targetPath,
 		IsTracing:    true,
-		// Example state symbols: for a real use case, these might be loaded from a config or detected
-		StateSymbols: []string{"main.StateA", "main.StateB"},
+		StateSymbols: stateSymbols,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("GoSTE running on %s. Press Ctrl+C to stop tracing and collect policy.\n", targetPath)
-
-	// Start the engine: handles binary loading, probe attachment and event loop.
-	// Blocks until ctx is cancelled or target exits.
+	fmt.Printf("GoSTE Tracing: %s. Symbols: %v\n", targetPath, stateSymbols)
 	if err := e.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start engine: %v\n", err)
 		os.Exit(1)
 	}
 	defer e.Stop()
-
-	fmt.Println("\nCollecting and finalizing policy...")
 
 	policy, err := e.CollectPolicy()
 	if err != nil {
@@ -65,11 +93,64 @@ func main() {
 		if err := policy.WritePolicyToFile(*outputFlag); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write policy to %s: %v\n", *outputFlag, err)
 		} else {
-			fmt.Printf("Policy successfully saved to %s\n", *outputFlag)
+			fmt.Printf("Policy saved to %s\n", *outputFlag)
 		}
 	} else {
 		policy.PrintPolicy()
 	}
+}
 
-	fmt.Println("Shutting down GoSTE...")
+func runEnforce() {
+	enforceCmd := flag.NewFlagSet("enforce", flag.ExitOnError)
+	actionFlag := enforceCmd.String("a", "errno", "Action on violation: log, errno, kill-process")
+
+	enforceCmd.Parse(os.Args[2:])
+
+	// Required: policy path and target binary
+	if enforceCmd.NArg() < 2 {
+		fmt.Println("Usage: goste enforce -a <action> <policy.json> <binary-to-trace>")
+		enforceCmd.PrintDefaults()
+		os.Exit(1)
+	}
+
+	policyPath := enforceCmd.Arg(0)
+	targetPath := enforceCmd.Arg(1)
+
+	actionMap := map[string]uint32{
+		"log":          engine.ActionLog,
+		"errno":        engine.ActionErrno,
+		"kill-process": engine.ActionKill,
+	}
+	actionID, ok := actionMap[*actionFlag]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Invalid action: %s. Valid: log, errno, kill-process\n", *actionFlag)
+		os.Exit(1)
+	}
+
+	policy, err := engine.LoadPolicy(policyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load policy: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	e, err := engine.NewEngine(engine.Config{
+		BinaryPath:    targetPath,
+		IsTracing:     false,
+		EnforceAction: actionID,
+		Policy:        policy,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("GoSTE Enforcement: %s using policy %s (Action: %s)\n", targetPath, policyPath, *actionFlag)
+	if err := e.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to start engine: %v\n", err)
+		os.Exit(1)
+	}
+	defer e.Stop()
 }

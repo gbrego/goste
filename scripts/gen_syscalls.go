@@ -70,10 +70,16 @@ func main() {
 	for id := range syscalls {
 		ids = append(ids, id)
 	}
-	// Note: string sort for numeric IDs works well enough for generation
-	// but let's just write them out.
 	for _, id := range ids {
 		fmt.Fprintf(outFile, "\t%s: \"%s\",\n", id, syscalls[id])
+	}
+
+	fmt.Fprintln(outFile, "}")
+	fmt.Fprintln(outFile, "")
+	fmt.Fprintln(outFile, "var GeneratedSyscallsByName = map[string]int{")
+
+	for _, id := range ids {
+		fmt.Fprintf(outFile, "\t\"%s\": %s,\n", syscalls[id], id)
 	}
 
 	fmt.Fprintln(outFile, "}")

@@ -17,10 +17,18 @@ import (
 
 // Config holds the configuration for the GoSTE Engine.
 type Config struct {
-	BinaryPath   string
-	IsTracing    bool
-	StateSymbols []string
+	BinaryPath    string
+	IsTracing     bool
+	EnforceAction uint32
+	StateSymbols  []string
+	Policy        *Policy
 }
+
+const (
+	ActionLog   uint32 = 0
+	ActionErrno uint32 = 1
+	ActionKill  uint32 = 2
+)
 
 type Engine struct {
 
@@ -55,8 +63,14 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := e.initEmptyMaps(); err != nil {
-		return fmt.Errorf("initializing empty maps: %w", err)
+	if e.config.IsTracing {
+		if err := e.initEmptyMaps(); err != nil {
+			return fmt.Errorf("initializing empty maps: %w", err)
+		}
+	} else if e.config.Policy != nil {
+		if err := e.initEnforcementMaps(); err != nil {
+			return fmt.Errorf("initializing enforcement maps: %w", err)
+		}
 	}
 
 	//Open the executable target
@@ -75,8 +89,14 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := e.attachTracingProbes(); err != nil {
-		return err
+	if e.config.IsTracing || e.config.EnforceAction == ActionLog {
+		if err := e.attachTracingProbes(); err != nil {
+			return err
+		}
+	} else {
+		if err := e.attachEnforcementProbes(); err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("Engine ready. Starting target: %s\n", e.config.BinaryPath)
@@ -107,8 +127,12 @@ func (e *Engine) loadBpfObjects() error {
 		if err := v.Set(e.config.IsTracing); err != nil {
 			return fmt.Errorf("setting is_tracing variable: %w", err)
 		}
-	} else {
-		return fmt.Errorf("variable 'is_tracing' not found in BPF spec")
+	}
+
+	if v, ok := spec.Variables["enforce_action"]; ok {
+		if err := v.Set(e.config.EnforceAction); err != nil {
+			return fmt.Errorf("setting enforce_action variable: %w", err)
+		}
 	}
 
 	goidOffset, err := getGoidOffset(e.config.BinaryPath)
@@ -127,7 +151,11 @@ func (e *Engine) loadBpfObjects() error {
 
 	// Set max entries for the state_map
 	if m, ok := spec.Maps["state_map"]; ok {
-		m.MaxEntries = uint32(len(e.config.StateSymbols) + 1)
+		numStates := uint32(len(e.config.StateSymbols) + 1)
+		if !e.config.IsTracing && e.config.Policy != nil {
+			numStates = uint32(len(e.config.Policy.States))
+		}
+		m.MaxEntries = numStates
 	}
 
 	if err := spec.LoadAndAssign(&e.bpfObjects, nil); err != nil {
@@ -224,6 +252,26 @@ func (e *Engine) initEmptyMaps() error {
 		state := bpf.GosteAppState{} // All-zero initialized structure
 		if err := e.bpfObjects.StateMap.Update(uint32(i), &state, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("initializing state_map at index %d: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// initEnforcementMaps populates the eBPF maps with the provided policy.
+func (e *Engine) initEnforcementMaps() error {
+	if e.config.Policy == nil {
+		return fmt.Errorf("no policy provided for enforcement mode")
+	}
+
+	bpfStates, err := e.config.Policy.MapToBPFStates()
+	if err != nil {
+		return fmt.Errorf("converting policy to BPF states: %w", err)
+	}
+
+	for id, state := range bpfStates {
+		if err := e.bpfObjects.StateMap.Update(id, &state, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("populating state_map at index %d: %w", id, err)
 		}
 	}
 
@@ -370,6 +418,13 @@ func (e *Engine) attachTracingProbes() error {
 		return fmt.Errorf("attaching sys_enter tracepoint: %w", err)
 	}
 	e.links = append(e.links, l)
+	return nil
+}
+
+func (e *Engine) attachEnforcementProbes() error {
+	// TODO: implement enforcement-specific probes (e.g. LSM or Seccomp integration)
+	// For now, it could use the same MonitorSyscallEvent or something else.
+	fmt.Println("[Engine] Attaching enforcement-specific probes...")
 	return nil
 }
 

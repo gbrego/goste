@@ -15,8 +15,20 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define NOF_SYSCALLS 512
 #define MAX_STATES 16
 
+/* From include/uapi/asm-generic/signal.h */
+#define SIGKILL 9
+
+/* Action to take when a syscall filter violation is detected */
+#define ACTION_LOG 0
+#define ACTION_ERRNO 1
+#define ACTION_KILL 2
+
 /* Execution mode: tracing vs enforcement */
 const volatile bool is_tracing = true;
+const volatile __u32 enforce_action = 0;
+
+/* Current process is a child process of goste*/
+const volatile bool is_child_process = true;
 
 /* Offset of the goid field in the runtime.g struct */
 const volatile __u64 goid_offset = 0;
@@ -378,6 +390,27 @@ static int register_transition(u32 from, u32 to) {
   return 0;
 }
 
+/* INHERITED FROM SYSCOMB
+ * Check validity of the application state transition
+ */
+static int is_valid_transition(u32 from, u32 to) {
+  struct app_state *state;
+
+  state = bpf_map_lookup_elem(&state_map, &from);
+  if (!state) {
+    bpf_printk("Error retrieving application state");
+    return 0;
+  }
+
+  if (to >= MAX_STATES) {
+    bpf_printk("Error state identifier exceeds the maximum number of "
+               "states");
+    return 0;
+  }
+
+  return state->next_state[to];
+}
+
 /*
  * INHERITED AND MODIFIED FROM SYSCOMB
  * Generic trigger representing a one-way application state transition.
@@ -412,15 +445,14 @@ int trigger_state_transition(struct pt_regs *ctx) {
         bpf_printk("Error registering application state transition");
         return 1;
       }
-    }
-    /* enforcment part
-    else {
+    } else {
+
       if (!is_valid_transition(*state_id, next_state_id)) {
         if (is_child_process || *state_id) {
           bpf_printk("Flow integrity violation: invalid transition "
                      "from %d to %d",
                      *state_id, next_state_id);
-          bpf_send_signal_thread(SIGKILL);
+          bpf_send_signal(SIGKILL);
           return 1;
         } else {
           bpf_printk("Flow integrity warning: invalid transition "
@@ -429,7 +461,6 @@ int trigger_state_transition(struct pt_regs *ctx) {
         }
       }
     }
-    */
 
     *state_id = next_state_id;
 
