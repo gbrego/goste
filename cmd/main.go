@@ -12,6 +12,17 @@ import (
 	"goste/internal/engine"
 )
 
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -44,7 +55,8 @@ func printUsage() {
 func runTrace() {
 	traceCmd := flag.NewFlagSet("trace", flag.ExitOnError)
 	outputFlag := traceCmd.String("o", "", "Path to the output JSON policy file")
-	symbolsFlag := traceCmd.String("s", "", "Comma-separated list of symbols to trace for state transitions")
+	var symbolsFlag stringSlice
+	traceCmd.Var(&symbolsFlag, "s", "Symbol to trace for state transitions in format [path:]symbol (can be specified multiple times)")
 
 	traceCmd.Parse(os.Args[2:])
 
@@ -55,11 +67,20 @@ func runTrace() {
 	}
 
 	targetPath := traceCmd.Arg(0)
-	var stateSymbols []string
-	if *symbolsFlag != "" {
-		stateSymbols = strings.Split(*symbolsFlag, ",")
-		for i := range stateSymbols {
-			stateSymbols[i] = strings.TrimSpace(stateSymbols[i])
+	var stateSymbols []engine.StateSymbol
+	for _, s := range symbolsFlag {
+		s = strings.TrimSpace(s)
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) == 2 {
+			stateSymbols = append(stateSymbols, engine.StateSymbol{
+				Path:   parts[0],
+				Symbol: parts[1],
+			})
+		} else {
+			stateSymbols = append(stateSymbols, engine.StateSymbol{
+				Path:   targetPath,
+				Symbol: s,
+			})
 		}
 	}
 

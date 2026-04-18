@@ -15,12 +15,17 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
+type StateSymbol struct {
+	Path   string
+	Symbol string
+}
+
 // Config holds the configuration for the GoSTE Engine.
 type Config struct {
 	BinaryPath    string
 	IsTracing     bool
 	EnforceAction uint32
-	StateSymbols  []string
+	StateSymbols  []StateSymbol
 	Policy        *Policy
 }
 
@@ -48,7 +53,6 @@ type Engine struct {
 type probeTarget struct {
 	variants []string
 	program  *ebpf.Program
-	isReturn bool
 }
 
 // NewEngine creates and initialises a new Engine with the provided configuration.
@@ -374,15 +378,7 @@ func (e *Engine) attachGoRuntimeProbes() error {
 
 func (e *Engine) tryAttachGoRuntimeProbeVariant(probe probeTarget) error {
 	for _, sym := range probe.variants {
-		var up link.Link
-		var err error
-
-		if probe.isReturn {
-			up, err = e.executable.Uretprobe(sym, probe.program, nil)
-		} else {
-			up, err = e.executable.Uprobe(sym, probe.program, nil)
-		}
-
+		up, err := e.executable.Uprobe(sym, probe.program, nil)
 		if err == nil {
 			e.links = append(e.links, up)
 			return nil
@@ -404,19 +400,41 @@ func (e *Engine) attachCommonProbes() error {
 
 	// Attach state transition triggers if symbols are provided
 	if len(e.config.StateSymbols) > 0 {
-		cookies := make([]uint64, len(e.config.StateSymbols))
-		for i := range cookies {
-			cookies[i] = uint64(i)
+		// Group symbols by executable path, so that uprobe-multi is attached only once per executable
+		execMap := make(map[string][]int)
+		for i, sym := range e.config.StateSymbols {
+			execMap[sym.Path] = append(execMap[sym.Path], i)
 		}
 
 		fmt.Printf("[Engine] Attaching state triggers to symbols: %v\n", e.config.StateSymbols)
-		um, err := e.executable.UprobeMulti(e.config.StateSymbols, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
-			Cookies: cookies,
-		})
-		if err != nil {
-			return fmt.Errorf("attaching state transition uprobes (ensure symbols exist in binary): %w", err)
+
+		for path, indices := range execMap {
+			var exe *link.Executable
+			var err error
+			if path == e.config.BinaryPath {
+				exe = e.executable
+			} else {
+				exe, err = link.OpenExecutable(path)
+				if err != nil {
+					return fmt.Errorf("opening executable %s for state trace: %w", path, err)
+				}
+			}
+
+			symbols := make([]string, len(indices))
+			cookies := make([]uint64, len(indices))
+			for i, idx := range indices {
+				symbols[i] = e.config.StateSymbols[idx].Symbol
+				cookies[i] = uint64(idx) // The cookie maps directly to the global state ID across all binaries
+			}
+
+			um, err := exe.UprobeMulti(symbols, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
+				Cookies: cookies,
+			})
+			if err != nil {
+				return fmt.Errorf("attaching state transition uprobes to %s: %w", path, err)
+			}
+			e.links = append(e.links, um)
 		}
-		e.links = append(e.links, um)
 	}
 
 	return nil

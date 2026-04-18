@@ -58,7 +58,10 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 			Next:     nextStates[i],
 		}
 		if i > 0 && i-1 < uint32(len(e.config.StateSymbols)) {
-			state.Probe = &Probe{Symbol: e.config.StateSymbols[i-1]}
+			state.Probe = &Probe{
+				Path:   e.config.StateSymbols[i-1].Path,
+				Symbol: e.config.StateSymbols[i-1].Symbol,
+			}
 		}
 		policy.States = append(policy.States, state)
 	}
@@ -209,10 +212,10 @@ func LoadPolicy(path string) (*Policy, error) {
 	return &p, nil
 }
 
-// GetStateSymbols extracts the ordered list of probe symbols from the policy.
+// GetStateSymbols extracts the ordered list of probes from the policy.
 // It assumes state IDs are sequential starting from 0, and that probes
 // corresponding to transitions start from State 1.
-func (p *Policy) GetStateSymbols() []string {
+func (p *Policy) GetStateSymbols() []StateSymbol {
 	// Sort states by ID to ensure correct transition order
 	sortedStates := make([]State, len(p.States))
 	copy(sortedStates, p.States)
@@ -220,10 +223,17 @@ func (p *Policy) GetStateSymbols() []string {
 		return sortedStates[i].ID < sortedStates[j].ID
 	})
 
-	var symbols []string
+	var symbols []StateSymbol
 	for _, s := range sortedStates {
 		if s.Probe != nil && s.Probe.Symbol != "" {
-			symbols = append(symbols, s.Probe.Symbol)
+			path := s.Probe.Path
+			if path == "" {
+				path = p.Binary // fallback for older policies
+			}
+			symbols = append(symbols, StateSymbol{
+				Path:   path,
+				Symbol: s.Probe.Symbol,
+			})
 		}
 	}
 	return symbols
@@ -237,7 +247,7 @@ func (p *Policy) MapToBPFStates() (map[uint32]bpf.GosteAppState, error) {
 	for _, s := range p.States {
 		appState := bpf.GosteAppState{}
 
-		// 1. Map Syscall names back to IDs
+		// Map Syscall names back to IDs
 		for _, name := range s.Syscalls {
 			id, ok := GeneratedSyscallsByName[name]
 			if !ok {
@@ -248,7 +258,7 @@ func (p *Policy) MapToBPFStates() (map[uint32]bpf.GosteAppState, error) {
 			}
 		}
 
-		// 2. Map Next states
+		// Map Next states
 		for _, nextID := range s.Next {
 			if nextID >= MaxStates {
 				return nil, fmt.Errorf("state ID %d exceeds MAX_STATES (%d)", nextID, MaxStates)
