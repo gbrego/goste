@@ -58,16 +58,15 @@ func runTrace() {
 	var symbolsFlag stringSlice
 	traceCmd.Var(&symbolsFlag, "s", "Symbol to trace for state transitions in format [path:]symbol (can be specified multiple times)")
 	pidFlag := traceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
-	tidFlag := traceCmd.Int("t", 0, "Trace the singular task with the specified TID (PID in kernel space)")
 
 	traceCmd.Parse(os.Args[2:])
 
-	isChildProcess := *pidFlag == 0 && *tidFlag == 0
+	isChildProcess := *pidFlag == 0
 	targetPath := ""
 
 	if !isChildProcess {
 		if traceCmd.NArg() > 0 {
-			fmt.Println("Usage error: cannot specify binary-to-trace when using -p or -t")
+			fmt.Println("Usage error: cannot specify binary-to-trace when using -p")
 			traceCmd.PrintDefaults()
 			os.Exit(1)
 		}
@@ -104,7 +103,6 @@ func runTrace() {
 		IsTracing:      true,
 		StateSymbols:   stateSymbols,
 		TargetTgid:     *pidFlag,
-		TargetPid:      *tidFlag,
 		IsChildProcess: isChildProcess,
 	})
 	if err != nil {
@@ -140,11 +138,10 @@ func runEnforce() {
 	enforceCmd := flag.NewFlagSet("enforce", flag.ExitOnError)
 	actionFlag := enforceCmd.String("a", "errno", "Action on violation: log, errno, kill-process")
 	pidFlag := enforceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
-	tidFlag := enforceCmd.Int("t", 0, "Trace the singular task with the specified TID (PID in kernel space)")
 
 	enforceCmd.Parse(os.Args[2:])
 
-	isChildProcess := *pidFlag == 0 && *tidFlag == 0
+	isChildProcess := *pidFlag == 0
 	targetPath := ""
 	policyPath := ""
 
@@ -155,7 +152,7 @@ func runEnforce() {
 			os.Exit(1)
 		}
 		if enforceCmd.NArg() > 1 {
-			fmt.Println("Usage error: cannot specify binary-to-trace when using -p or -t")
+			fmt.Println("Usage error: cannot specify binary-to-trace when using -p")
 			enforceCmd.PrintDefaults()
 			os.Exit(1)
 		}
@@ -200,7 +197,6 @@ func runEnforce() {
 		Policy:         policy,
 		StateSymbols:   stateSymbols,
 		TargetTgid:     *pidFlag,
-		TargetPid:      *tidFlag,
 		IsChildProcess: isChildProcess,
 	})
 	if err != nil {

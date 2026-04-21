@@ -29,7 +29,6 @@ type Config struct {
 	Policy        *Policy
 
 	TargetTgid     int
-	TargetPid      int
 	IsChildProcess bool
 }
 
@@ -51,6 +50,13 @@ type Engine struct {
 	executableErr error
 	bpfObjects    bpf.GosteObjects
 
+	isGoBinary       bool
+	goidOffset       int64
+	entryPointOffset uint64
+	allmAddr         uint64
+	mProcidOffset    int64
+	mAlllinkOffset   int64
+
 	// links holds all attached eBPF links (probes, tracepoints) for cleanup.
 	links []link.Link
 }
@@ -63,9 +69,7 @@ type probeTarget struct {
 // NewEngine creates and initialises a new Engine with the provided configuration.
 func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.BinaryPath == "" {
-		if cfg.TargetPid != 0 {
-			cfg.BinaryPath = fmt.Sprintf("/proc/%d/exe", cfg.TargetPid)
-		} else if cfg.TargetTgid != 0 {
+		if cfg.TargetTgid != 0 {
 			cfg.BinaryPath = fmt.Sprintf("/proc/%d/exe", cfg.TargetTgid)
 		}
 	}
@@ -75,9 +79,163 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}, nil
 }
 
+func (e *Engine) elfManagement() error {
+	if e.config.BinaryPath == "" {
+		return nil
+	}
+
+	f, err := elf.Open(e.config.BinaryPath)
+	if err != nil {
+		return fmt.Errorf("opening ELF: %w", err)
+	}
+	defer f.Close()
+
+	e.isGoBinary = e.checkGoBinary(f)
+
+	if e.config.IsChildProcess {
+		e.entryPointOffset, err = e.getEntryPoint(f)
+		if err != nil {
+			return fmt.Errorf("calculating entry point offset: %w", err)
+		}
+	}
+
+	if e.isGoBinary {
+		d, err := f.DWARF()
+		if err != nil {
+			fmt.Printf("Warning: extracting DWARF failed: %v (Go-specific tracing might be limited)\n", err)
+		} else {
+			e.goidOffset, err = e.getGoidOffset(d)
+			if err != nil {
+				fmt.Printf("Warning: detecting goid offset failed: %v\n", err)
+			} else {
+				fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", e.goidOffset)
+			}
+
+			if !e.config.IsChildProcess {
+				e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
+				if err != nil {
+					fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
+				} else {
+					fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Engine) checkGoBinary(f *elf.File) bool {
+	return f.Section(".gopclntab") != nil
+}
+
+func (e *Engine) getEntryPoint(f *elf.File) (uint64, error) {
+	entryPointVA := f.Entry
+	for _, prog := range f.Progs {
+		if prog.Type == elf.PT_LOAD {
+			if entryPointVA >= prog.Vaddr && entryPointVA < prog.Vaddr+prog.Filesz {
+				return entryPointVA - prog.Vaddr + prog.Off, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("cant map virtual address %x to offset", entryPointVA)
+}
+
+func (e *Engine) getGoidOffset(d *dwarf.Data) (int64, error) {
+	reader := d.Reader()
+	for {
+		entry, err := reader.Next()
+		if err != nil || entry == nil {
+			break
+		}
+
+		if entry.Tag != dwarf.TagStructType {
+			continue
+		}
+
+		typ, err := d.Type(entry.Offset)
+		if err != nil {
+			continue
+		}
+
+		st, ok := typ.(*dwarf.StructType)
+		if !ok || st.StructName != "runtime.g" {
+			continue
+		}
+
+		for _, field := range st.Field {
+			if field.Name == "goid" {
+				return field.ByteOffset, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("goid offset not found")
+}
+
+func (e *Engine) getMOffsets(f *elf.File, d *dwarf.Data) (allm uint64, procid int64, alllink int64, err error) {
+	symbols, err := f.Symbols()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("reading symbols: %w", err)
+	}
+	for _, sym := range symbols {
+		if sym.Name == "runtime.allm" {
+			allm = sym.Value
+			break
+		}
+	}
+	if allm == 0 {
+		return 0, 0, 0, fmt.Errorf("runtime.allm symbol not found")
+	}
+
+	reader := d.Reader()
+	for {
+		entry, err := reader.Next()
+		if err != nil || entry == nil {
+			break
+		}
+		if entry.Tag != dwarf.TagStructType {
+			continue
+		}
+		typ, err := d.Type(entry.Offset)
+		if err != nil {
+			continue
+		}
+		st, ok := typ.(*dwarf.StructType)
+		if !ok || st.StructName != "runtime.m" {
+			continue
+		}
+
+		// runtime.m exists only once, after this break anyway
+		for _, field := range st.Field {
+			switch field.Name {
+			case "procid":
+				procid = field.ByteOffset
+			case "alllink":
+				alllink = field.ByteOffset
+			}
+		}
+		break // runtime.m exists only once, no need to continue
+	}
+
+	switch {
+	case procid == 0 && alllink == 0:
+		return allm, 0, 0, fmt.Errorf("procid and alllink not found in runtime.m")
+	case procid == 0:
+		return allm, 0, 0, fmt.Errorf("procid not found in runtime.m")
+	case alllink == 0:
+		return allm, 0, 0, fmt.Errorf("alllink not found in runtime.m")
+	}
+
+	return allm, procid, alllink, nil
+}
+
 func (e *Engine) Start(ctx context.Context) error {
 
 	//Load and initialize eBPF maps and programs into the kernel
+
+	if err := e.elfManagement(); err != nil {
+		return err
+	}
 
 	if err := e.loadBpfObjects(); err != nil {
 		return err
@@ -106,7 +264,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
-	if e.executable != nil {
+	if e.executable != nil && e.isGoBinary {
 		if err := e.attachGoRuntimeProbes(); err != nil {
 			return err
 		}
@@ -129,6 +287,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
 		fmt.Printf("Tracing task with PID: %d\n", pid)
 
 		// Wait for either the target to exit or a termination signal (Ctrl+C)
@@ -158,44 +317,34 @@ func (e *Engine) loadBpfObjects() error {
 		}
 	}
 
-	if v, ok := spec.Variables["enforce_action"]; ok {
-		if err := v.Set(e.config.EnforceAction); err != nil {
-			return fmt.Errorf("setting enforce_action variable: %w", err)
-		}
-	}
-
-	if v, ok := spec.Variables["targ_pid"]; ok {
-		if err := v.Set(int32(e.config.TargetPid)); err != nil {
-			return fmt.Errorf("setting targ_pid variable: %w", err)
-		}
-	}
-
-	if v, ok := spec.Variables["targ_tgid"]; ok {
-		if err := v.Set(int32(e.config.TargetTgid)); err != nil {
-			return fmt.Errorf("setting targ_tgid variable: %w", err)
-		}
-	}
-
-	if v, ok := spec.Variables["is_child_process"]; ok {
-		if err := v.Set(e.config.IsChildProcess); err != nil {
-			return fmt.Errorf("setting is_child_process variable: %w", err)
-		}
-	}
-
-	if e.config.BinaryPath != "" {
-		goidOffset, err := getGoidOffset(e.config.BinaryPath)
-		if err != nil {
-			fmt.Printf("Warning: detecting goid offset failed: %v (ensure binary has DWARF symbols)\n", err)
-		} else {
-			fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", goidOffset)
-
-			if v, ok := spec.Variables["goid_offset"]; ok {
-				if err := v.Set(uint64(goidOffset)); err != nil {
-					return fmt.Errorf("setting goid_offset variable: %w", err)
-				}
-			} else {
-				return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
+	// Only set enforcement-related variables when not running as a child process
+	if !e.config.IsChildProcess {
+		if v, ok := spec.Variables["enforce_action"]; ok {
+			if err := v.Set(e.config.EnforceAction); err != nil {
+				return fmt.Errorf("setting enforce_action variable: %w", err)
 			}
+		}
+
+		if v, ok := spec.Variables["targ_tgid"]; ok {
+			if err := v.Set(int32(e.config.TargetTgid)); err != nil {
+				return fmt.Errorf("setting targ_tgid variable: %w", err)
+			}
+		}
+
+		if v, ok := spec.Variables["is_child_process"]; ok {
+			if err := v.Set(false); err != nil {
+				return fmt.Errorf("setting is_child_process variable: %w", err)
+			}
+		}
+	}
+
+	if e.isGoBinary {
+		if v, ok := spec.Variables["goid_offset"]; ok {
+			if err := v.Set(uint64(e.goidOffset)); err != nil {
+				return fmt.Errorf("setting goid_offset variable: %w", err)
+			}
+		} else {
+			return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
 		}
 	}
 
@@ -212,52 +361,6 @@ func (e *Engine) loadBpfObjects() error {
 		return fmt.Errorf("loading BPF objects: %w", err)
 	}
 	return nil
-}
-
-func getGoidOffset(binaryPath string) (int64, error) {
-	f, err := elf.Open(binaryPath)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	d, err := f.DWARF()
-	if err != nil {
-		return 0, err
-	}
-
-	reader := d.Reader()
-	for {
-		entry, err := reader.Next()
-		if err != nil || entry == nil {
-			break
-		}
-
-		// skip everything that is not a struct
-		if entry.Tag != dwarf.TagStructType {
-			continue
-		}
-
-		// ask stdlib to parse the complete type
-		typ, err := d.Type(entry.Offset)
-		if err != nil {
-			continue
-		}
-
-		st, ok := typ.(*dwarf.StructType)
-		if !ok || st.StructName != "runtime.g" {
-			continue
-		}
-
-		// iterate already parsed fields — no manual reader needed
-		for _, field := range st.Field {
-			if field.Name == "goid" {
-				return field.ByteOffset, nil
-			}
-		}
-	}
-
-	return 0, fmt.Errorf("goid offset not found in %s", binaryPath)
 }
 
 // This function is to be skipped when attaching to a live process (PID provided by user)
@@ -338,23 +441,8 @@ func (e *Engine) initEnforcementMaps() error {
 }
 
 func (e *Engine) attachEntryPointUprobe(pid int) error {
-	// Read the entry point from the ELF header of the target binary
-	f, err := elf.Open(e.config.BinaryPath)
-	if err != nil {
-		return fmt.Errorf("opening ELF: %w", err)
-	}
-	defer f.Close()
-
-	entryPointVA := f.Entry
-
-	// Translating VA to real offlse
-	entryPointOffset, err := getOffsetFromVA(f, entryPointVA)
-	if err != nil {
-		return fmt.Errorf("calculating entry point offset: %w", err)
-	}
-
 	up, err := e.executable.Uprobe("", e.bpfObjects.TraceEntryPoint, &link.UprobeOptions{
-		Address: entryPointOffset,
+		Address: e.entryPointOffset,
 		Cookie:  uint64(pid),
 	})
 
@@ -364,17 +452,6 @@ func (e *Engine) attachEntryPointUprobe(pid int) error {
 
 	e.links = append(e.links, up)
 	return nil
-}
-
-func getOffsetFromVA(f *elf.File, va uint64) (uint64, error) {
-	for _, prog := range f.Progs {
-		if prog.Type == elf.PT_LOAD {
-			if va >= prog.Vaddr && va < prog.Vaddr+prog.Filesz {
-				return va - prog.Vaddr + prog.Off, nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("cant map virtuall adrees %x to offset", va)
 }
 
 func (e *Engine) attachGoRuntimeProbes() error {
