@@ -30,6 +30,10 @@ const volatile __u32 enforce_action = 0;
 /* Current process is a child process of goste*/
 const volatile bool is_child_process = true;
 
+/* Filtering criteria */
+const volatile pid_t targ_pid = 0;
+const volatile pid_t targ_tgid = 0;
+
 /* Offset of the goid field in the runtime.g struct */
 const volatile __u64 goid_offset = 0;
 
@@ -112,6 +116,23 @@ static __always_inline __u32 *trace_task(struct task_struct *task,
     }
   }
   return task_state;
+}
+
+/* INHERITED FROM SYSCOMB*/
+
+static bool to_trace(pid_t pid, pid_t tgid) {
+    uid_t uid;
+
+    /* filters */
+    if (is_child_process)
+        // When running the tracee as a child process we activate tracing
+        // after the successful execution of execve
+        return false;
+    if (targ_tgid && targ_tgid != tgid)
+        return false;
+    if (targ_pid && targ_pid != pid)
+        return false;
+    return true;
 }
 
 SEC("uprobe/runtime.mstart")

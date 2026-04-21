@@ -57,16 +57,28 @@ func runTrace() {
 	outputFlag := traceCmd.String("o", "", "Path to the output JSON policy file")
 	var symbolsFlag stringSlice
 	traceCmd.Var(&symbolsFlag, "s", "Symbol to trace for state transitions in format [path:]symbol (can be specified multiple times)")
+	pidFlag := traceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
+	tidFlag := traceCmd.Int("t", 0, "Trace the singular task with the specified TID (PID in kernel space)")
 
 	traceCmd.Parse(os.Args[2:])
 
-	if traceCmd.NArg() < 1 {
-		fmt.Println("Usage: goste trace [options] <binary-to-trace>")
-		traceCmd.PrintDefaults()
-		os.Exit(1)
-	}
+	isChildProcess := *pidFlag == 0 && *tidFlag == 0
+	targetPath := ""
 
-	targetPath := traceCmd.Arg(0)
+	if !isChildProcess {
+		if traceCmd.NArg() > 0 {
+			fmt.Println("Usage error: cannot specify binary-to-trace when using -p or -t")
+			traceCmd.PrintDefaults()
+			os.Exit(1)
+		}
+	} else {
+		if traceCmd.NArg() < 1 {
+			fmt.Println("Usage: goste trace [options] <binary-to-trace>")
+			traceCmd.PrintDefaults()
+			os.Exit(1)
+		}
+		targetPath = traceCmd.Arg(0)
+	}
 	var stateSymbols []engine.StateSymbol
 	for _, s := range symbolsFlag {
 		s = strings.TrimSpace(s)
@@ -88,9 +100,12 @@ func runTrace() {
 	defer stop()
 
 	e, err := engine.NewEngine(engine.Config{
-		BinaryPath:   targetPath,
-		IsTracing:    true,
-		StateSymbols: stateSymbols,
+		BinaryPath:     targetPath,
+		IsTracing:      true,
+		StateSymbols:   stateSymbols,
+		TargetTgid:     *pidFlag,
+		TargetPid:      *tidFlag,
+		IsChildProcess: isChildProcess,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
@@ -124,18 +139,37 @@ func runTrace() {
 func runEnforce() {
 	enforceCmd := flag.NewFlagSet("enforce", flag.ExitOnError)
 	actionFlag := enforceCmd.String("a", "errno", "Action on violation: log, errno, kill-process")
+	pidFlag := enforceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
+	tidFlag := enforceCmd.Int("t", 0, "Trace the singular task with the specified TID (PID in kernel space)")
 
 	enforceCmd.Parse(os.Args[2:])
 
-	// Required: policy path and target binary
-	if enforceCmd.NArg() < 2 {
-		fmt.Println("Usage: goste enforce -a <action> <policy.json> <binary-to-trace>")
-		enforceCmd.PrintDefaults()
-		os.Exit(1)
-	}
+	isChildProcess := *pidFlag == 0 && *tidFlag == 0
+	targetPath := ""
+	policyPath := ""
 
-	policyPath := enforceCmd.Arg(0)
-	targetPath := enforceCmd.Arg(1)
+	if !isChildProcess {
+		if enforceCmd.NArg() < 1 {
+			fmt.Println("Usage: goste enforce -a <action> -p <pid> <policy.json>")
+			enforceCmd.PrintDefaults()
+			os.Exit(1)
+		}
+		if enforceCmd.NArg() > 1 {
+			fmt.Println("Usage error: cannot specify binary-to-trace when using -p or -t")
+			enforceCmd.PrintDefaults()
+			os.Exit(1)
+		}
+		policyPath = enforceCmd.Arg(0)
+	} else {
+		// Required: policy path and target binary
+		if enforceCmd.NArg() < 2 {
+			fmt.Println("Usage: goste enforce -a <action> <policy.json> <binary-to-trace>")
+			enforceCmd.PrintDefaults()
+			os.Exit(1)
+		}
+		policyPath = enforceCmd.Arg(0)
+		targetPath = enforceCmd.Arg(1)
+	}
 
 	actionMap := map[string]uint32{
 		"log":          engine.ActionLog,
@@ -160,11 +194,14 @@ func runEnforce() {
 	defer stop()
 
 	e, err := engine.NewEngine(engine.Config{
-		BinaryPath:    targetPath,
-		IsTracing:     false,
-		EnforceAction: actionID,
-		Policy:        policy,
-		StateSymbols:  stateSymbols,
+		BinaryPath:     targetPath,
+		IsTracing:      false,
+		EnforceAction:  actionID,
+		Policy:         policy,
+		StateSymbols:   stateSymbols,
+		TargetTgid:     *pidFlag,
+		TargetPid:      *tidFlag,
+		IsChildProcess: isChildProcess,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)

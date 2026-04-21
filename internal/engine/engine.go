@@ -27,6 +27,10 @@ type Config struct {
 	EnforceAction uint32
 	StateSymbols  []StateSymbol
 	Policy        *Policy
+
+	TargetTgid     int
+	TargetPid      int
+	IsChildProcess bool
 }
 
 const (
@@ -43,8 +47,9 @@ type Engine struct {
 	//Configs passed from main (parsed from cli)
 	config Config
 
-	executable *link.Executable
-	bpfObjects bpf.GosteObjects
+	executable    *link.Executable
+	executableErr error
+	bpfObjects    bpf.GosteObjects
 
 	// links holds all attached eBPF links (probes, tracepoints) for cleanup.
 	links []link.Link
@@ -57,6 +62,14 @@ type probeTarget struct {
 
 // NewEngine creates and initialises a new Engine with the provided configuration.
 func NewEngine(cfg Config) (*Engine, error) {
+	if cfg.BinaryPath == "" {
+		if cfg.TargetPid != 0 {
+			cfg.BinaryPath = fmt.Sprintf("/proc/%d/exe", cfg.TargetPid)
+		} else if cfg.TargetTgid != 0 {
+			cfg.BinaryPath = fmt.Sprintf("/proc/%d/exe", cfg.TargetTgid)
+		}
+	}
+
 	return &Engine{
 		config: cfg,
 	}, nil
@@ -82,18 +95,21 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	//Open the executable target
 
-	var err error
-	e.executable, err = link.OpenExecutable(e.config.BinaryPath)
-	if err != nil {
-		return fmt.Errorf("opening executable %s: %w", e.config.BinaryPath, err)
+	if e.config.BinaryPath != "" {
+		e.executable, e.executableErr = link.OpenExecutable(e.config.BinaryPath)
+		if e.executableErr != nil {
+			fmt.Printf("Warning: opening primary executable %s failed: %v\n", e.config.BinaryPath, e.executableErr)
+		}
 	}
 
 	if err := e.attachCommonProbes(); err != nil {
 		return err
 	}
 
-	if err := e.attachGoRuntimeProbes(); err != nil {
-		return err
+	if e.executable != nil {
+		if err := e.attachGoRuntimeProbes(); err != nil {
+			return err
+		}
 	}
 
 	if e.config.IsTracing || e.config.EnforceAction == ActionLog {
@@ -106,18 +122,24 @@ func (e *Engine) Start(ctx context.Context) error {
 		}
 	}
 
-	fmt.Printf("Engine ready. Starting target: %s\n", e.config.BinaryPath)
+	if e.config.IsChildProcess {
+		fmt.Printf("Engine ready. Starting target: %s\n", e.config.BinaryPath)
 
-	pid, done, err := e.runTarget(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Tracing task with PID: %d\n", pid)
+		pid, done, err := e.runTarget(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Tracing task with PID: %d\n", pid)
 
-	// Wait for either the target to exit or a termination signal (Ctrl+C)
-	select {
-	case <-ctx.Done():
-	case <-done:
+		// Wait for either the target to exit or a termination signal (Ctrl+C)
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+	} else {
+		fmt.Printf("Engine ready. Live tracing target\n")
+		// Wait for context cancellation
+		<-ctx.Done()
 	}
 
 	return nil
@@ -142,18 +164,39 @@ func (e *Engine) loadBpfObjects() error {
 		}
 	}
 
-	goidOffset, err := getGoidOffset(e.config.BinaryPath)
-	if err != nil {
-		return fmt.Errorf("detecting goid offset: %w (ensure binary has DWARF symbols)", err)
-	}
-	fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", goidOffset)
-
-	if v, ok := spec.Variables["goid_offset"]; ok {
-		if err := v.Set(uint64(goidOffset)); err != nil {
-			return fmt.Errorf("setting goid_offset variable: %w", err)
+	if v, ok := spec.Variables["targ_pid"]; ok {
+		if err := v.Set(int32(e.config.TargetPid)); err != nil {
+			return fmt.Errorf("setting targ_pid variable: %w", err)
 		}
-	} else {
-		return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
+	}
+
+	if v, ok := spec.Variables["targ_tgid"]; ok {
+		if err := v.Set(int32(e.config.TargetTgid)); err != nil {
+			return fmt.Errorf("setting targ_tgid variable: %w", err)
+		}
+	}
+
+	if v, ok := spec.Variables["is_child_process"]; ok {
+		if err := v.Set(e.config.IsChildProcess); err != nil {
+			return fmt.Errorf("setting is_child_process variable: %w", err)
+		}
+	}
+
+	if e.config.BinaryPath != "" {
+		goidOffset, err := getGoidOffset(e.config.BinaryPath)
+		if err != nil {
+			fmt.Printf("Warning: detecting goid offset failed: %v (ensure binary has DWARF symbols)\n", err)
+		} else {
+			fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", goidOffset)
+
+			if v, ok := spec.Variables["goid_offset"]; ok {
+				if err := v.Set(uint64(goidOffset)); err != nil {
+					return fmt.Errorf("setting goid_offset variable: %w", err)
+				}
+			} else {
+				return fmt.Errorf("variable 'goid_offset' not found in BPF spec")
+			}
+		}
 	}
 
 	// Set max entries for the state_map
@@ -413,6 +456,12 @@ func (e *Engine) attachCommonProbes() error {
 			var err error
 			if path == e.config.BinaryPath {
 				exe = e.executable
+				if exe == nil {
+					if e.executableErr != nil {
+						return fmt.Errorf("attaching state transitions: primary executable %s is unavailable: %w", path, e.executableErr)
+					}
+					return fmt.Errorf("attaching state transitions: primary executable path is not set")
+				}
 			} else {
 				exe, err = link.OpenExecutable(path)
 				if err != nil {
