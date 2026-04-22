@@ -208,6 +208,19 @@ static __always_inline __u32 *get_goroutine_state_id(struct pt_regs *regs) {
   __u32 tgid = bpf_get_current_pid_tgid() >> 32;
   struct goroutine_id key = {.tgid = tgid, .goid = goid, ._pad = 0};
 
+  __u32 *state_id = bpf_map_lookup_elem(&goroutine_tracee_map, &key);
+
+  if (state_id)
+    return state_id;
+
+  // Goroutine not found:
+  // this happens when live attaching to a go porgram
+  // goroutine was created before the attach and therefore is still to be added
+  // initiating with "flexibel" state 0 since we don't know waht stage the
+  // target has reached
+
+  __u32 initial_state = 0;
+  bpf_map_update_elem(&goroutine_tracee_map, &key, &initial_state, BPF_NOEXIST);
   return bpf_map_lookup_elem(&goroutine_tracee_map, &key);
 }
 

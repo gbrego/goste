@@ -2,17 +2,22 @@ package engine
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"goste/internal/bpf"
 	"os"
 	"os/exec"
 	"syscall"
 
+	"bufio"
 	"debug/dwarf"
 	"debug/elf"
+	"strconv"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 type StateSymbol struct {
@@ -39,6 +44,8 @@ const (
 
 	MaxSyscalls = 512
 	MaxStates   = 16
+
+	GoThreadMarker uint32 = 0xFFFFFFFF
 )
 
 type Engine struct {
@@ -50,6 +57,7 @@ type Engine struct {
 	executableErr error
 	bpfObjects    bpf.GosteObjects
 
+	isPIE            bool
 	isGoBinary       bool
 	goidOffset       int64
 	entryPointOffset uint64
@@ -91,6 +99,9 @@ func (e *Engine) elfManagement() error {
 	defer f.Close()
 
 	e.isGoBinary = e.checkGoBinary(f)
+
+	// modern linux systems compile executables as PIE, which are marked as dynamic shared objects in the elf type
+	e.isPIE = (f.Type == elf.ET_DYN)
 
 	if e.config.IsChildProcess {
 		e.entryPointOffset, err = e.getEntryPoint(f)
@@ -229,6 +240,106 @@ func (e *Engine) getMOffsets(f *elf.File, d *dwarf.Data) (allm uint64, procid in
 	return allm, procid, alllink, nil
 }
 
+// Necessary if binary is in PIE (Position independent executable)
+// Finds the base address of the process
+func (e *Engine) getProcessBaseAddress() (uint64, error) {
+	mapsPath := fmt.Sprintf("/proc/%d/maps", e.config.TargetTgid)
+	f, err := os.Open(mapsPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, "-")
+		if len(parts) > 0 {
+			base, err := strconv.ParseUint(parts[0], 16, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parsing base address: %w", err)
+			}
+			return base, nil
+		}
+	}
+	return 0, fmt.Errorf("could not find base address in %s", mapsPath)
+}
+
+func (e *Engine) readUint64(f *os.File, addr uint64) (uint64, error) {
+	buf := make([]byte, 8)
+	_, err := f.ReadAt(buf, int64(addr))
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(buf), nil
+}
+
+func (e *Engine) scanExistingGoThreads(baseAddr uint64) (map[uint32]bool, error) {
+	memPath := fmt.Sprintf("/proc/%d/mem", e.config.TargetTgid)
+	memFile, err := os.Open(memPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening target memory: %w", err)
+	}
+	defer memFile.Close()
+
+	// If binary is in PIE, we need to add the base address to the offset,
+	// PIE implies that the os can load the programm at a random access (ASLR)
+	// If not symbols extracted from ELF are allready absolute virtual addresses
+	allMAddr := e.allmAddr
+	if e.isPIE {
+		allMAddr += baseAddr
+	}
+
+	// Read pointer to first M
+	firstM, err := e.readUint64(memFile, allMAddr)
+	if err != nil {
+		return nil, fmt.Errorf("reading allm pointer at %x: %w", allMAddr, err)
+	}
+
+	goTIDs := make(map[uint32]bool)
+	current := firstM
+	for current != 0 {
+		procid, err := e.readUint64(memFile, current+uint64(e.mProcidOffset))
+		if err != nil {
+			break
+		}
+		if procid != 0 {
+			goTIDs[uint32(procid)] = true
+		}
+		current, err = e.readUint64(memFile, current+uint64(e.mAlllinkOffset))
+		if err != nil {
+			break
+		}
+	}
+	return goTIDs, nil
+}
+
+func (e *Engine) applyGoThreadMarkers(tids map[uint32]bool) error {
+	for tid := range tids {
+		if err := e.markGoThread(tid); err != nil {
+			fmt.Printf("Warning: could not mark Go thread %d: %v\n", tid, err)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) markGoThread(tid uint32) error {
+	// Since kernel 6.9, we must use PIDFD_THREAD to open non-leader threads.
+	// This flag is defined as O_EXCL, which is 0x80 on x86_64.
+	const PIDFD_THREAD = 0x80
+	pidfd, err := unix.PidfdOpen(int(tid), PIDFD_THREAD)
+	if err != nil {
+		return fmt.Errorf("pidfd_open(%d) with PIDFD_THREAD: %w", tid, err)
+	}
+	defer unix.Close(pidfd)
+
+	marker := GoThreadMarker
+	if err := e.bpfObjects.TaskTraceeMap.Update(int32(pidfd), &marker, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("task_storage update: %w", err)
+	}
+	return nil
+}
+
 func (e *Engine) Start(ctx context.Context) error {
 
 	//Load and initialize eBPF maps and programs into the kernel
@@ -296,6 +407,23 @@ func (e *Engine) Start(ctx context.Context) error {
 		case <-done:
 		}
 	} else {
+
+		if e.isGoBinary {
+			fmt.Printf("Live hooking: scanning for existing Go threads...\n")
+			base, err := e.getProcessBaseAddress()
+			if err == nil {
+				tids, err := e.scanExistingGoThreads(base)
+				if err == nil {
+					fmt.Printf("Found %d existing Go threads. Marking them in BPF...\n", len(tids))
+					e.applyGoThreadMarkers(tids)
+				} else {
+					fmt.Printf("Warning: failed to scan Go threads: %v\n", err)
+				}
+			} else {
+				fmt.Printf("Warning: failed to get base address: %v\n", err)
+			}
+		}
+
 		fmt.Printf("Engine ready. Live tracing target\n")
 		// Wait for context cancellation
 		<-ctx.Done()
@@ -540,6 +668,7 @@ func (e *Engine) attachCommonProbes() error {
 					return fmt.Errorf("attaching state transitions: primary executable path is not set")
 				}
 			} else {
+				//if path is not the same as the primary executable (ex: external library), open it
 				exe, err = link.OpenExecutable(path)
 				if err != nil {
 					return fmt.Errorf("opening executable %s for state trace: %w", path, err)
