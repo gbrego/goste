@@ -337,6 +337,8 @@ func (e *Engine) markGoThread(tid uint32) error {
 	if err := e.bpfObjects.TaskTraceeMap.Update(int32(pidfd), &marker, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("task_storage update: %w", err)
 	}
+
+	fmt.Printf("[Engine] Detected and marked active Go thread: %d\n", tid)
 	return nil
 }
 
@@ -659,7 +661,7 @@ func (e *Engine) attachCommonProbes() error {
 		for path, indices := range execMap {
 			var exe *link.Executable
 			var err error
-			if path == e.config.BinaryPath {
+			if path == "" || path == e.config.BinaryPath {
 				exe = e.executable
 				if exe == nil {
 					if e.executableErr != nil {

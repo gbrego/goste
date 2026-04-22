@@ -65,6 +65,7 @@ func runTrace() {
 	targetPath := ""
 
 	if !isChildProcess {
+		targetPath = fmt.Sprintf("/proc/%d/exe", *pidFlag)
 		if traceCmd.NArg() > 0 {
 			fmt.Println("Usage error: cannot specify binary-to-trace when using -p")
 			traceCmd.PrintDefaults()
@@ -146,6 +147,7 @@ func runEnforce() {
 	policyPath := ""
 
 	if !isChildProcess {
+		targetPath = fmt.Sprintf("/proc/%d/exe", *pidFlag)
 		if enforceCmd.NArg() < 1 {
 			fmt.Println("Usage: goste enforce -a <action> -p <pid> <policy.json>")
 			enforceCmd.PrintDefaults()
