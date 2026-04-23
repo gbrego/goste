@@ -715,8 +715,9 @@ func (e *Engine) attachEnforcementProbes() error {
 	return nil
 }
 
-// Stop detaches all probes and unloads the eBPF objects cleanly.
-func (e *Engine) Stop() {
+// DetachProbes removes all eBPF hooks from the kernel, stopping new events.
+// It should be called as soon as tracing is no longer needed.
+func (e *Engine) DetachProbes() {
 	// Close all attached BPF links
 	for _, l := range e.links {
 		if l != nil {
@@ -724,11 +725,17 @@ func (e *Engine) Stop() {
 		}
 	}
 	e.links = nil
+}
 
+// CloseResources frees the eBPF maps and objects cleanly.
+// It is recommended to allow a brief period after DetachProbes before calling this
+// (e.g. by performing data collection tasks) to ensure the kernel RCU grace period elapses.
+func (e *Engine) CloseResources() {
+	// Ensure probes are detached just in case DetachProbes wasn't called explicitly
+	e.DetachProbes()
 	e.bpfObjects.Close()
 
 	if e.executable != nil {
 		// Note: link.Executable doesn't have a Close() method in current cilium/ebpf link API.
 	}
-
 }

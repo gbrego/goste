@@ -97,24 +97,31 @@ struct {
 //__always_inline is used by the compiler to copy this code directly in the
 // calling functions
 
+static __always_inline __u32 *add_to_tracee_map(struct task_struct *task,
+                                                __u32 *state_id) {
+  __u32 root_state_id = 0;
+  if (!state_id) {
+    state_id = &root_state_id;
+  }
+
+  return bpf_task_storage_get(&task_tracee_map, task, state_id,
+                              BPF_LOCAL_STORAGE_GET_F_CREATE);
+}
+
 static __always_inline __u32 *trace_task(struct task_struct *task,
                                          struct task_struct *parent) {
-  __u32 *task_state = bpf_task_storage_get(&task_tracee_map, task, NULL,
-                                           BPF_LOCAL_STORAGE_GET_F_CREATE);
-  if (!task_state)
-    return NULL;
-
-  *task_state = 0;
+  __u32 *initial_state = NULL;
 
   if (parent) {
     __u32 *parent_state =
         bpf_task_storage_get(&task_tracee_map, parent, NULL, 0);
 
     if (parent_state && *parent_state != GO_THREAD_MARKER) {
-      *task_state = *parent_state;
+      initial_state = parent_state;
     }
   }
-  return task_state;
+
+  return add_to_tracee_map(task, initial_state);
 }
 
 /* INHERITED AND MODIFIED FROM SYSCOMB
@@ -309,7 +316,7 @@ int remove_exiting_goroutine(struct pt_regs *ctx) {
 static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
                                                       u8 **syscalls) {
   struct task_struct *task = bpf_get_current_task_btf();
-  u32 *state_id = NULL;
+  u32 *state_id = NULL, *success, root_state_id = 0;
   struct app_state *state;
 
   // Get application state from the tracee map
@@ -333,21 +340,20 @@ static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
     return 0;
   }
 
-  /* To be implemnted when tracing live tasks (as of now target is hardcoded and
-  started by goste itself)
+  // Live tarcing mode: the first time a task that is to be traced is detected
+  // it's added to the task_tracee_map with state 0
 
   if (to_trace(task->pid, task->tgid)) {
-      success = add_tracee(task, NULL, NULL);
-      state = bpf_map_lookup_elem(&state_map, &root_state_id);
-      if (!success || !state) {
-          bpf_printk("Error adding task to the tracee task set");
-          return 1;
-      }
+    success = trace_task(task, NULL);
+    state = bpf_map_lookup_elem(&state_map, &root_state_id);
+    if (!success || !state) {
+      bpf_printk("Error adding task to the tracee task set");
+      return 1;
+    }
 
-      *syscalls = state->syscalls;
-      return 0;
+    *syscalls = state->syscalls;
+    return 0;
   }
-  */
 
   return 0;
 }
@@ -461,7 +467,7 @@ static int is_valid_transition(u32 from, u32 to) {
 SEC("uprobe.multi")
 int trigger_state_transition(struct pt_regs *ctx) {
   struct task_struct *task = bpf_get_current_task_btf();
-  u32 *state_id, next_state_id;
+  u32 *state_id, next_state_id, *success;
   int err;
 
   state_id = bpf_task_storage_get(&task_tracee_map, task, NULL, 0);
@@ -501,17 +507,15 @@ int trigger_state_transition(struct pt_regs *ctx) {
     return 0;
   }
 
-  /* to be implemented when tracing live tasks
   if (to_trace(task->pid, task->tgid)) {
     next_state_id = bpf_get_attach_cookie(ctx) + 1;
-    success = add_seccomp_tracee(task, &next_state_id);
+    success = add_to_tracee_map(task, &next_state_id);
     if (!success) {
       bpf_printk("Error adding task to the tracee task set");
       return 1;
     }
     return 0;
   }
-  */
 
   return 0;
 }

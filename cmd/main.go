@@ -116,7 +116,12 @@ func runTrace() {
 		fmt.Fprintf(os.Stderr, "failed to start engine: %v\n", err)
 		os.Exit(1)
 	}
-	defer e.Stop()
+
+	// Target execution has finished or was interrupted.
+	// 1. Immediately detach probes to stop capturing events and allow kernel RCU grace period to start.
+	e.DetachProbes()
+	// 2. Schedule map destruction at the very end.
+	defer e.CloseResources()
 
 	policy, err := e.CollectPolicy()
 	if err != nil {
@@ -211,5 +216,7 @@ func runEnforce() {
 		fmt.Fprintf(os.Stderr, "failed to start engine: %v\n", err)
 		os.Exit(1)
 	}
-	defer e.Stop()
+	
+	e.DetachProbes()
+	defer e.CloseResources()
 }
