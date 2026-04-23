@@ -451,14 +451,15 @@ func (e *Engine) loadBpfObjects() error {
 		}
 	}
 
-	// Only set enforcement-related variables when not running as a child process
-	if !e.config.IsChildProcess {
-		if v, ok := spec.Variables["enforce_action"]; ok {
-			if err := v.Set(e.config.EnforceAction); err != nil {
-				return fmt.Errorf("setting enforce_action variable: %w", err)
-			}
+	// Set enforcement-related variables
+	if v, ok := spec.Variables["enforce_action"]; ok {
+		if err := v.Set(e.config.EnforceAction); err != nil {
+			return fmt.Errorf("setting enforce_action variable: %w", err)
 		}
+	}
 
+	// Only set TGID-related filters when not running as a child process (PID-based attach)
+	if !e.config.IsChildProcess {
 		if v, ok := spec.Variables["targ_tgid"]; ok {
 			if err := v.Set(int32(e.config.TargetTgid)); err != nil {
 				return fmt.Errorf("setting targ_tgid variable: %w", err)

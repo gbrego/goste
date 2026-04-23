@@ -209,7 +209,12 @@ static __always_inline __u64 get_goid(void *g) {
 }
 
 static __always_inline __u32 *get_goroutine_state_id(struct pt_regs *regs) {
-  __u64 goid = get_goid((void *)regs->r14);
+
+  __u64 g_ptr = 0;
+  // safely read r14, works for both Tracepoints and Kprobes
+  bpf_probe_read_kernel(&g_ptr, sizeof(g_ptr), &regs->r14);
+
+  __u64 goid = get_goid((void *)g_ptr);
   if (!goid)
     return NULL;
 
@@ -553,7 +558,9 @@ int override_syscall_filter(struct pt_regs *ctx) {
   u64 syscall_id;
   struct task_struct *task;
 
-  err = get_current_syscall_bitmap(ctx, &syscalls);
+  struct pt_regs *real_regs = (struct pt_regs *)ctx->di;
+  err = get_current_syscall_bitmap(real_regs, &syscalls);
+
   if (err) {
     return 1;
   }
@@ -576,6 +583,9 @@ int override_syscall_filter(struct pt_regs *ctx) {
 
   syscall_id = bpf_get_attach_cookie(ctx);
 
+  //
+  // bpf_printk("syscall detected: %d", syscall_id);
+
   // This is what seccomp does to distinguish 32-bit syscalls belonging to
   // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs
   // (see: arch/x86/include/asm/syscall.h#L167)
@@ -597,6 +607,9 @@ int override_syscall_filter(struct pt_regs *ctx) {
     apply_enforce_action(ctx);
     return 1;
   }
+
+  //
+  // bpf_printk("Tracing syscall: %ld", syscalls[syscall_id]); // TESTING
 
   if (!syscalls[syscall_id]) {
     bpf_printk("Syscall filter violation: syscall %d", syscall_id);
