@@ -7,6 +7,7 @@ import (
 	"goste/internal/bpf"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 
 	"bufio"
@@ -46,6 +47,9 @@ const (
 	MaxStates   = 16
 
 	GoThreadMarker uint32 = 0xFFFFFFFF
+
+	// Path to the Linux kernel error injection functions
+	ErrorInjectionPath = "/sys/kernel/debug/error_injection/list"
 )
 
 type Engine struct {
@@ -709,9 +713,61 @@ func (e *Engine) attachTracingProbes() error {
 }
 
 func (e *Engine) attachEnforcementProbes() error {
-	// TODO: implement enforcement-specific probes (e.g. LSM or Seccomp integration)
-	// For now, it could use the same MonitorSyscallEvent or something else.
-	fmt.Println("[Engine] Attaching enforcement-specific probes...")
+	fmt.Println("[Engine] Attaching enforcement-specific probes (OverrideSyscallFilter)...")
+
+	// Read available filter functions to safely determine which syscalls can be hooked on this host
+	file, err := os.Open(ErrorInjectionPath)
+	if err != nil {
+		return fmt.Errorf("failed to open error_injection/list: %w (is debugfs mounted?)", err)
+	}
+	defer file.Close()
+	var symbols []string
+	var cookies []uint64
+	seen := make(map[string]bool)
+	prefix := "__x64_sys_"
+	if runtime.GOARCH == "arm64" {
+		// even though currently goste only works on amd64
+		prefix = "__arm64_sys_"
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		// the file format is: <function_name> [<module>]\n (es: __x64_sys_read [kernel])
+		// Fields are used to extract only the first protected token
+		parts := strings.Fields(scanner.Text())
+		if len(parts) == 0 {
+			continue
+		}
+		sym := parts[0]
+		if strings.HasPrefix(sym, prefix) {
+			name := strings.TrimPrefix(sym, prefix)
+			if id, ok := GeneratedSyscallsByName[name]; ok {
+				if !seen[sym] {
+					symbols = append(symbols, sym)
+					cookies = append(cookies, uint64(id))
+					seen[sym] = true
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read filter functions: %w", err)
+	}
+
+	if len(symbols) == 0 {
+		return fmt.Errorf("no matching syscalls found in available_filter_functions with prefix %s", prefix)
+	}
+
+	km, err := link.KprobeMulti(e.bpfObjects.OverrideSyscallFilter, link.KprobeMultiOptions{
+		Symbols: symbols,
+		Cookies: cookies,
+	})
+	if err != nil {
+		return fmt.Errorf("attaching kprobe.multi for syscall enforcement: %w", err)
+	}
+
+	e.links = append(e.links, km)
+	fmt.Printf("[Engine] Successfully hooked %d syscalls for enforcement.\n", len(symbols))
 	return nil
 }
 

@@ -26,6 +26,7 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 /* Execution mode: tracing vs enforcement */
 const volatile bool is_tracing = true;
 const volatile __u32 enforce_action = 0;
+const volatile int error_code = 1; // Default to EPERM
 
 /* Current process is a child process of goste*/
 const volatile bool is_child_process = true;
@@ -251,7 +252,7 @@ int trace_new_goroutine(struct pt_regs *ctx) {
 
     // only trace first goroutine, if a goroutine is not created by a fellow
     // gorouine and the parent task is traced as 0xFFFFFFFF that it's a go
-    // system goroutine, tracing it is futilem since if compromized it means the
+    // system goroutine, tracing it is futile since if compromized it means the
     // whole runtime is compromized and therefore goste is powerless
     if (task_state && *task_state != GO_THREAD_MARKER) {
       state_to_save = *task_state;
@@ -515,6 +516,91 @@ int trigger_state_transition(struct pt_regs *ctx) {
       return 1;
     }
     return 0;
+  }
+
+  return 0;
+}
+
+/*
+ * INHERITED AND MODIFIED FROM SYSCOMB
+ * Apply the enforcement action according to the current configuration
+ *
+ * We always execute the override return function to ensure the code of
+ * the system call is never being executed
+ * (https://www.elastic.co/security-labs/signaling-from-within-how-ebpf-interacts-with-signals)
+ */
+static __always_inline void apply_enforce_action(struct pt_regs *ctx) {
+
+  if (enforce_action == ACTION_KILL) {
+    bpf_send_signal(SIGKILL);
+  }
+
+  bpf_override_return(ctx, -error_code);
+}
+
+/*
+ * INHERITED AND MODIFIED FROM SYSCOMB
+ * Enforce syscall filters with kill-process, kill-thread, and errno actions.
+ *
+ * We attach this program to error injection functions only when necessary
+ * (i.e., when enforcing syscall filters with actions that must prevent the
+ * execution of the syscall code).
+ */
+SEC("kprobe.multi")
+int override_syscall_filter(struct pt_regs *ctx) {
+  u8 *syscalls = NULL;
+  int err;
+  u64 syscall_id;
+  struct task_struct *task;
+
+  err = get_current_syscall_bitmap(ctx, &syscalls);
+  if (err) {
+    return 1;
+  }
+
+  // Ignore non-tracee tasks
+  // WARNING: this logic does work in seccomb mode (state fallback, which is
+  // currently the only mode) if least privilege mode is implemented, this logic
+  // will either stay flawed like syscomb or must be changed: when live hooking
+  // (-p) and get_current_syscall_bitmap detects a task that must be traced but
+  // is not yet in the maps is gives it state 0, in least priviledge mode we
+  // don't know what state the target is, and if state 0 does not support every
+  // syscall supported by the acutal current state, the error in "mistakenly"
+  // injected anyways
+
+  if (!syscalls) {
+    return 0;
+  }
+
+  // Tracee task
+
+  syscall_id = bpf_get_attach_cookie(ctx);
+
+  // This is what seccomp does to distinguish 32-bit syscalls belonging to
+  // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs
+  // (see: arch/x86/include/asm/syscall.h#L167)
+  task = bpf_get_current_task_btf();
+  if (task->thread_info.status & TS_COMPAT) {
+    // i386 ABI
+    bpf_printk("Syscalls belonging to the i386 architecture are not "
+               "allowed");
+    apply_enforce_action(ctx);
+    return 0;
+  }
+
+  // x86_64 or x32 ABI
+
+  if (syscall_id >= NOF_SYSCALLS) {
+    bpf_printk("Error during syscall filter evaluation: invalid syscall "
+               "number: %ld",
+               syscall_id);
+    apply_enforce_action(ctx);
+    return 1;
+  }
+
+  if (!syscalls[syscall_id]) {
+    bpf_printk("Syscall filter violation: syscall %d", syscall_id);
+    apply_enforce_action(ctx);
   }
 
   return 0;
