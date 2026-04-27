@@ -176,28 +176,6 @@ int trace_entry_point(struct pt_regs *ctx) {
   return 0;
 }
 
-// BPF_PROG is a macro that helps passing arguments such as parent and child
-// task_struct
-SEC("tp_btf/sched_process_fork")
-int BPF_PROG(inherit_state_info, struct task_struct *parent,
-             struct task_struct *child) {
-
-  __u32 *parent_state = bpf_task_storage_get(&task_tracee_map, parent, NULL, 0);
-
-  if (!parent_state) {
-    return 0;
-  }
-
-  __u32 *child_state = trace_task(child, parent);
-  if (!child_state) {
-    bpf_printk("Error: failed to inherit state for child PID %d", child->pid);
-    return 1;
-  }
-  bpf_printk("State inherited: parent PID %d -> child PID %d (state_id=0x%x)",
-             parent->pid, child->pid, *child_state);
-  return 0;
-}
-
 /* Recover goid from a goroutine pointer */
 static __always_inline __u64 get_goid(void *g) {
   __u64 goid = 0;
@@ -235,6 +213,39 @@ static __always_inline __u32 *get_goroutine_state_id(struct pt_regs *regs) {
   __u32 initial_state = 0;
   bpf_map_update_elem(&goroutine_tracee_map, &key, &initial_state, BPF_NOEXIST);
   return bpf_map_lookup_elem(&goroutine_tracee_map, &key);
+}
+
+// BPF_PROG is a macro that helps passing arguments such as parent and child
+// task_struct
+SEC("tp_btf/sched_process_fork")
+int BPF_PROG(inherit_state_info, struct task_struct *parent,
+             struct task_struct *child) {
+
+  __u32 *parent_state = bpf_task_storage_get(&task_tracee_map, parent, NULL, 0);
+
+  if (!parent_state) {
+    return 0;
+  }
+
+  if (*parent_state == GO_THREAD_MARKER) {
+    struct pt_regs *user_regs = (struct pt_regs *)bpf_task_pt_regs(parent);
+    parent_state = get_goroutine_state_id(user_regs);
+  }
+
+  if (!parent_state) {
+    bpf_printk("Warning: forked process %d could not inherit state from parent goroutine", child->pid);
+    //add_to_tracee_map will assign state 0 as default since state is NULL
+  }
+
+  __u32 *child_state = add_to_tracee_map(child, parent_state);
+
+  if (!child_state) {
+    bpf_printk("Error: failed to inherit state for child PID %d", child->pid);
+    return 1;
+  }
+  bpf_printk("State inherited: parent PID %d -> child PID %d (state_id=0x%x)",
+             parent->pid, child->pid, *child_state);
+  return 0;
 }
 
 SEC("uprobe/trace_new_goroutine")
