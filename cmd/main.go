@@ -58,6 +58,7 @@ func runTrace() {
 	var symbolsFlag stringSlice
 	traceCmd.Var(&symbolsFlag, "s", "Symbol to trace for state transitions in format [path:]symbol (can be specified multiple times)")
 	pidFlag := traceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
+	skipPrivilegeDropFlag := traceCmd.Bool("skip-privilege-drop", false, "Do not drop sudo privileges for the target application")
 
 	traceCmd.Parse(os.Args[2:])
 
@@ -100,11 +101,12 @@ func runTrace() {
 	defer stop()
 
 	e, err := engine.NewEngine(engine.Config{
-		BinaryPath:     targetPath,
-		IsTracing:      true,
-		StateSymbols:   stateSymbols,
-		TargetTgid:     *pidFlag,
-		IsChildProcess: isChildProcess,
+		BinaryPath:        targetPath,
+		IsTracing:         true,
+		StateSymbols:      stateSymbols,
+		TargetTgid:        *pidFlag,
+		IsChildProcess:    isChildProcess,
+		SkipPrivilegeDrop: *skipPrivilegeDropFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
@@ -144,6 +146,7 @@ func runEnforce() {
 	enforceCmd := flag.NewFlagSet("enforce", flag.ExitOnError)
 	actionFlag := enforceCmd.String("a", "errno", "Action on violation: log, errno, kill-process")
 	pidFlag := enforceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
+	skipPrivilegeDropFlag := enforceCmd.Bool("skip-privilege-drop", false, "Do not drop sudo privileges for the target application")
 
 	enforceCmd.Parse(os.Args[2:])
 
@@ -198,13 +201,14 @@ func runEnforce() {
 	defer stop()
 
 	e, err := engine.NewEngine(engine.Config{
-		BinaryPath:     targetPath,
-		IsTracing:      false,
-		EnforceAction:  actionID,
-		Policy:         policy,
-		StateSymbols:   stateSymbols,
-		TargetTgid:     *pidFlag,
-		IsChildProcess: isChildProcess,
+		BinaryPath:        targetPath,
+		IsTracing:         false,
+		EnforceAction:     actionID,
+		Policy:            policy,
+		StateSymbols:      stateSymbols,
+		TargetTgid:        *pidFlag,
+		IsChildProcess:    isChildProcess,
+		SkipPrivilegeDrop: *skipPrivilegeDropFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)

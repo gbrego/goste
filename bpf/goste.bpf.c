@@ -193,7 +193,10 @@ static __always_inline __u32 *get_goroutine_state_id(struct pt_regs *regs) {
   bpf_probe_read_kernel(&g_ptr, sizeof(g_ptr), &regs->r14);
 
   __u64 goid = get_goid((void *)g_ptr);
-  if (!goid)
+  // sanity check: ignore invalid or suspiciously large goids (junk memory)
+  // happens when Go threads execute syscalls while not hosting a goroutine
+  // (internal runtime tasks)
+  if (!goid || goid > 1000000000000ULL)
     return NULL;
 
   __u32 tgid = bpf_get_current_pid_tgid() >> 32;
@@ -233,8 +236,10 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   }
 
   if (!parent_state) {
-    bpf_printk("Warning: forked process %d could not inherit state from parent goroutine", child->pid);
-    //add_to_tracee_map will assign state 0 as default since state is NULL
+    bpf_printk("Warning: forked process %d could not inherit state from parent "
+               "goroutine",
+               child->pid);
+    // add_to_tracee_map will assign state 0 as default since state is NULL
   }
 
   __u32 *child_state = add_to_tracee_map(child, parent_state);

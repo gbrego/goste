@@ -19,6 +19,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"golang.org/x/sys/unix"
+
+	"debug/buildinfo"
+	"debug/gosym"
 )
 
 type StateSymbol struct {
@@ -34,8 +37,9 @@ type Config struct {
 	StateSymbols  []StateSymbol
 	Policy        *Policy
 
-	TargetTgid     int
-	IsChildProcess bool
+	TargetTgid        int
+	IsChildProcess    bool
+	SkipPrivilegeDrop bool
 }
 
 const (
@@ -52,6 +56,31 @@ const (
 	ErrorInjectionPath = "/sys/kernel/debug/error_injection/list"
 )
 
+type GoVersionOffsets struct {
+	GoidOffset     int64
+	MProcidOffset  int64
+	MAlllinkOffset int64
+}
+
+type progSegment struct {
+	Vaddr  uint64
+	Memsz  uint64
+	Filesz uint64
+	Off    uint64
+}
+
+// hardcoded offsets for different Go versions (amd64)
+// this table is used when the binary is stripped
+var goVersionTable = map[string]GoVersionOffsets{
+	"go1.20": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 160},
+	"go1.21": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.22": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.23": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.24": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.25": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.26": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+}
+
 type Engine struct {
 
 	//Configs passed from main (parsed from cli)
@@ -63,11 +92,15 @@ type Engine struct {
 
 	isPIE            bool
 	isGoBinary       bool
+	isStripped       bool
 	goidOffset       int64
 	entryPointOffset uint64
 	allmAddr         uint64
 	mProcidOffset    int64
 	mAlllinkOffset   int64
+
+	segments   []progSegment
+	goSymTable *gosym.Table
 
 	// links holds all attached eBPF links (probes, tracepoints) for cleanup.
 	links []link.Link
@@ -103,35 +136,81 @@ func (e *Engine) elfManagement() error {
 	defer f.Close()
 
 	e.isGoBinary = e.checkGoBinary(f)
+	e.isStripped = e.checkIfStripped(f)
+
+	for _, prog := range f.Progs {
+		if prog.Type == elf.PT_LOAD {
+			e.segments = append(e.segments, progSegment{
+				Vaddr:  prog.Vaddr,
+				Memsz:  prog.Memsz,
+				Filesz: prog.Filesz,
+				Off:    prog.Off,
+			})
+		}
+	}
 
 	// modern linux systems compile executables as PIE, which are marked as dynamic shared objects in the elf type
 	e.isPIE = (f.Type == elf.ET_DYN)
 
 	if e.config.IsChildProcess {
-		e.entryPointOffset, err = e.getEntryPoint(f)
+		var err error
+		e.entryPointOffset, err = e.virtualToOffset(f.Entry)
 		if err != nil {
 			return fmt.Errorf("calculating entry point offset: %w", err)
 		}
 	}
 
 	if e.isGoBinary {
-		d, err := f.DWARF()
-		if err != nil {
-			fmt.Printf("Warning: extracting DWARF failed: %v (Go-specific tracing might be limited)\n", err)
-		} else {
-			e.goidOffset, err = e.getGoidOffset(d)
-			if err != nil {
-				fmt.Printf("Warning: detecting goid offset failed: %v\n", err)
+		if e.isStripped {
+			fmt.Printf("Warning: binary is stripped, fallback to .gopclntab for symbols and obtaining offsets from static table\n")
+
+			if err := e.parseGoPCLnTab(f); err != nil {
+				fmt.Printf("Warning: failed to parse .gopclntab: %v\n", err)
 			} else {
-				fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", e.goidOffset)
+				fmt.Printf("Successfully loaded .gopclntab symbols\n")
 			}
 
-			if !e.config.IsChildProcess {
-				e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
-				if err != nil {
-					fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
+			version, err := e.getGoVersion()
+			if err != nil {
+				fmt.Printf("Warning: could not detect Go version: %v\n", err)
+			} else {
+				fmt.Printf("Detected Go version: %s\n", version)
+				shortVersion := version
+				parts := strings.Split(version, ".")
+				if len(parts) >= 2 {
+					shortVersion = parts[0] + "." + parts[1]
+				}
+
+				if offsets, ok := goVersionTable[shortVersion]; ok {
+					e.goidOffset = offsets.GoidOffset
+					e.mProcidOffset = offsets.MProcidOffset
+					e.mAlllinkOffset = offsets.MAlllinkOffset
+					fmt.Printf("Applied offsets for %s: goid=%x, procid=%x, alllink=%x\n",
+						shortVersion, e.goidOffset, e.mProcidOffset, e.mAlllinkOffset)
 				} else {
-					fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
+					fmt.Printf("Warning: no hardcoded offsets for Go version %s. Tracing might fail.\n", shortVersion)
+				}
+			}
+
+		} else {
+			d, err := f.DWARF()
+			if err != nil {
+				fmt.Printf("Warning: extracting DWARF failed: %v (Go-specific tracing might be limited)\n", err)
+			} else {
+				e.goidOffset, err = e.getGoidOffset(d)
+				if err != nil {
+					fmt.Printf("Warning: detecting goid offset failed: %v\n", err)
+				} else {
+					fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", e.goidOffset)
+				}
+
+				if !e.config.IsChildProcess {
+					e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
+					if err != nil {
+						fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
+					} else {
+						fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
+					}
 				}
 			}
 		}
@@ -144,16 +223,72 @@ func (e *Engine) checkGoBinary(f *elf.File) bool {
 	return f.Section(".gopclntab") != nil
 }
 
-func (e *Engine) getEntryPoint(f *elf.File) (uint64, error) {
-	entryPointVA := f.Entry
-	for _, prog := range f.Progs {
-		if prog.Type == elf.PT_LOAD {
-			if entryPointVA >= prog.Vaddr && entryPointVA < prog.Vaddr+prog.Filesz {
-				return entryPointVA - prog.Vaddr + prog.Off, nil
-			}
+func (e *Engine) checkIfStripped(f *elf.File) bool {
+	return f.Section(".symtab") == nil
+}
+
+func (e *Engine) getGoVersion() (string, error) {
+	bi, err := buildinfo.ReadFile(e.config.BinaryPath)
+	if err != nil {
+		return "", err
+	}
+	return bi.GoVersion, nil
+}
+
+func (e *Engine) parseGoPCLnTab(f *elf.File) error {
+	pclndat, err := f.Section(".gopclntab").Data()
+	if err != nil {
+		return fmt.Errorf("reading .gopclntab: %w", err)
+	}
+
+	var textStart uint64
+	if sect := f.Section(".text"); sect != nil {
+		textStart = sect.Addr
+	}
+
+	lineTable := gosym.NewLineTable(pclndat, textStart)
+
+	e.goSymTable, err = gosym.NewTable(nil, lineTable)
+	if err != nil {
+		return fmt.Errorf("creating gosym table: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) virtualToOffset(va uint64) (uint64, error) {
+	for _, seg := range e.segments {
+		if va >= seg.Vaddr && va < seg.Vaddr+seg.Memsz {
+			return va - seg.Vaddr + seg.Off, nil
 		}
 	}
-	return 0, fmt.Errorf("cant map virtual address %x to offset", entryPointVA)
+	return 0, fmt.Errorf("cant map virtual address %x to offset", va)
+}
+
+func (e *Engine) resolveGoSymbol(name string) (uint64, error) {
+	if e.goSymTable == nil {
+		return 0, fmt.Errorf("gosym table not loaded")
+	}
+
+	if fn := e.goSymTable.LookupFunc(name); fn != nil {
+		return e.virtualToOffset(fn.Entry)
+	}
+	return 0, fmt.Errorf("symbol %s not found in .gopclntab", name)
+}
+
+func (e *Engine) resolveStateSymbols(symbols []string) ([]uint64, error) {
+	if e.goSymTable == nil {
+		return nil, fmt.Errorf("gosym table not loaded")
+	}
+
+	addresses := make([]uint64, len(symbols))
+	for i, sym := range symbols {
+		addr, err := e.resolveGoSymbol(sym)
+		if err != nil {
+			return nil, fmt.Errorf("resolving state symbol %s: %w", sym, err)
+		}
+		addresses[i] = addr
+	}
+	return addresses, nil
 }
 
 func (e *Engine) getGoidOffset(d *dwarf.Data) (int64, error) {
@@ -510,6 +645,26 @@ func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 		Ptrace: true,
 	}
 
+	// drop root privileges for target application
+	// goste must be run as root to use eBPF, however the potentially malicius target must not inherit sudo privileges
+	if !e.config.SkipPrivilegeDrop {
+		if sudoUID := os.Getenv("SUDO_UID"); sudoUID != "" {
+			if sudoGID := os.Getenv("SUDO_GID"); sudoGID != "" {
+				uid, errUID := strconv.Atoi(sudoUID)
+				gid, errGID := strconv.Atoi(sudoGID)
+				if errUID == nil && errGID == nil {
+					cmd.SysProcAttr.Credential = &syscall.Credential{
+						Uid: uint32(uid),
+						Gid: uint32(gid),
+					}
+					fmt.Printf("[Engine] Dropping target process privileges to uid=%d gid=%d\n", uid, gid)
+				}
+			}
+		}
+	} else {
+		fmt.Printf("[Engine] Skipping privilege drop for target process.\n")
+	}
+
 	if err := cmd.Start(); err != nil {
 		return 0, nil, fmt.Errorf("starting target: %w", err)
 	}
@@ -633,7 +788,20 @@ func (e *Engine) attachGoRuntimeProbes() error {
 
 func (e *Engine) tryAttachGoRuntimeProbeVariant(probe probeTarget) error {
 	for _, sym := range probe.variants {
-		up, err := e.executable.Uprobe(sym, probe.program, nil)
+		var err error
+		var up link.Link
+
+		if e.isStripped && e.goSymTable != nil {
+			addr, resolveErr := e.resolveGoSymbol(sym)
+			if resolveErr == nil {
+				up, err = e.executable.Uprobe(sym, probe.program, &link.UprobeOptions{Address: addr})
+			} else {
+				err = resolveErr
+			}
+		} else {
+			up, err = e.executable.Uprobe(sym, probe.program, nil)
+		}
+
 		if err == nil {
 			e.links = append(e.links, up)
 			return nil
@@ -689,9 +857,23 @@ func (e *Engine) attachCommonProbes() error {
 				cookies[i] = uint64(idx) // The cookie maps directly to the global state ID across all binaries
 			}
 
-			um, err := exe.UprobeMulti(symbols, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
-				Cookies: cookies,
-			})
+			var um link.Link
+			if e.isStripped && e.goSymTable != nil && (path == "" || path == e.config.BinaryPath) {
+				addresses, err := e.resolveStateSymbols(symbols)
+				if err != nil {
+					return fmt.Errorf("resolving state symbols for stripped binary: %w", err)
+				}
+				// When using Addresses, symbols argument must be nil
+				um, err = exe.UprobeMulti(nil, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
+					Addresses: addresses,
+					Cookies:   cookies,
+				})
+			} else {
+				um, err = exe.UprobeMulti(symbols, e.bpfObjects.TriggerStateTransition, &link.UprobeMultiOptions{
+					Cookies: cookies,
+				})
+			}
+
 			if err != nil {
 				return fmt.Errorf("attaching state transition uprobes to %s: %w", path, err)
 			}
