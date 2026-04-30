@@ -71,14 +71,18 @@ type progSegment struct {
 
 // hardcoded offsets for different Go versions (amd64)
 // this table is used when the binary is stripped
+// usually, offsets of Go runtime internal structures
+// remain stable within the same minor release
+// and change only between major or minor versions.
+
 var goVersionTable = map[string]GoVersionOffsets{
 	"go1.20": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 160},
 	"go1.21": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
 	"go1.22": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
 	"go1.23": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
-	"go1.24": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
-	"go1.25": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
-	"go1.26": {GoidOffset: 152, MProcidOffset: 80, MAlllinkOffset: 168},
+	"go1.24": {GoidOffset: 152, MProcidOffset: 72, MAlllinkOffset: 328}, //extracted from go 1.24.4
+	"go1.25": {GoidOffset: 152, MProcidOffset: 64, MAlllinkOffset: 344}, //extracted from go 1.25.8
+	"go1.26": {GoidOffset: 152, MProcidOffset: 64, MAlllinkOffset: 352}, //extracted from go 1.26.2
 }
 
 type Engine struct {
@@ -99,6 +103,7 @@ type Engine struct {
 	mProcidOffset    int64
 	mAlllinkOffset   int64
 
+	baseAddr   uint64
 	segments   []progSegment
 	goSymTable *gosym.Table
 
@@ -152,6 +157,12 @@ func (e *Engine) elfManagement() error {
 	// modern linux systems compile executables as PIE, which are marked as dynamic shared objects in the elf type
 	e.isPIE = (f.Type == elf.ET_DYN)
 
+	// If attaching to a live process, retrieve the base address once.
+	// This is needed for both stripped (heuristic) and unstripped (symbols/DWARF) PIE binaries.
+	if !e.config.IsChildProcess {
+		e.baseAddr, _ = e.getProcessBaseAddress()
+	}
+
 	if e.config.IsChildProcess {
 		var err error
 		e.entryPointOffset, err = e.virtualToOffset(f.Entry)
@@ -185,8 +196,20 @@ func (e *Engine) elfManagement() error {
 					e.goidOffset = offsets.GoidOffset
 					e.mProcidOffset = offsets.MProcidOffset
 					e.mAlllinkOffset = offsets.MAlllinkOffset
-					fmt.Printf("Applied offsets for %s: goid=%x, procid=%x, alllink=%x\n",
-						shortVersion, e.goidOffset, e.mProcidOffset, e.mAlllinkOffset)
+
+					// If attaching to a live process, try to recover allm via heuristic
+					if !e.config.IsChildProcess {
+						addr, errHeur := e.findAllmHeuristic(f)
+						if errHeur == nil {
+							e.allmAddr = addr
+							fmt.Printf("Detected allm via heuristic: %x\n", e.allmAddr)
+						} else {
+							fmt.Printf("Warning: allm heuristic failed: %v\n", errHeur)
+						}
+					}
+
+					fmt.Printf("Applied offsets for %s: goid=%x, procid=%x, alllink=%x, allm=%x\n",
+						shortVersion, e.goidOffset, e.mProcidOffset, e.mAlllinkOffset, e.allmAddr)
 				} else {
 					fmt.Printf("Warning: no hardcoded offsets for Go version %s. Tracing might fail.\n", shortVersion)
 				}
@@ -204,14 +227,14 @@ func (e *Engine) elfManagement() error {
 					fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", e.goidOffset)
 				}
 
-				if !e.config.IsChildProcess {
-					e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
-					if err != nil {
-						fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
-					} else {
-						fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
-					}
+				//if !e.config.IsChildProcess {
+				e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
+				if err != nil {
+					fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
+				} else {
+					fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
 				}
+				//}
 			}
 		}
 	}
@@ -413,6 +436,140 @@ func (e *Engine) readUint64(f *os.File, addr uint64) (uint64, error) {
 	return binary.LittleEndian.Uint64(buf), nil
 }
 
+//EXTREME runtime.allm RECOVERY PROCESS
+// when live hooking a striped process there is no way to directly access virables, but only functions via .gopclntab
+// in recent versions, runtime.allm is allways in .bss (we fall back to checking other sections if necessary)
+// tought, it is only not explicitly labelled as such
+// it is therefore possible to brute-force check every possible candidate offset:
+// if candidateOffset + mProcidOffset matches a real TID then the offset should be correct
+// false positives are extremely unlikly
+
+////EXTREME ALLM RECOVERY PROCESS BEGINS////
+
+func (e *Engine) findAllmHeuristic(f *elf.File) (uint64, error) {
+	knownTIDs, err := getRealTIDs(e.config.TargetTgid)
+	if err != nil {
+		return 0, fmt.Errorf("getting real TIDs: %w", err)
+	}
+	if len(knownTIDs) == 0 {
+		return 0, fmt.Errorf("no TIDs found for process %d", e.config.TargetTgid)
+	}
+
+	memPath := fmt.Sprintf("/proc/%d/mem", e.config.TargetTgid)
+	memFile, err := os.Open(memPath)
+	if err != nil {
+		return 0, err
+	}
+	defer memFile.Close()
+
+	// .bss first (in Go 1.20+ allm tends to be there)
+	sectionsToScan := []string{".bss", ".noptrdata", ".data", ".noptrbss"}
+
+	maxSize := uint64(0)
+	for _, name := range sectionsToScan {
+		if sec := f.Section(name); sec != nil && sec.Size > maxSize {
+			maxSize = sec.Size
+		}
+	}
+	if maxSize > 64*1024*1024 {
+		maxSize = 64 * 1024 * 1024
+	}
+	buf := make([]byte, maxSize)
+
+	for _, secName := range sectionsToScan {
+		sec := f.Section(secName)
+		if sec == nil || sec.Size == 0 {
+			continue
+		}
+
+		sectionStart := sec.Addr
+		sectionSize := min(sec.Size, uint64(64*1024*1024))
+		if e.isPIE {
+			sectionStart += e.baseAddr
+		}
+
+		readBuf := buf[:sectionSize]
+		if _, err := memFile.ReadAt(readBuf, int64(sectionStart)); err != nil {
+			fmt.Printf("Warning: failed to read section %s: %v\n", secName, err)
+			continue
+		}
+
+		for offset := uint64(0); offset+8 <= sectionSize; offset += 8 {
+			firstM := binary.LittleEndian.Uint64(readBuf[offset : offset+8])
+			if firstM == 0 || firstM < 0x10000 || firstM > 0x800000000000 {
+				continue
+			}
+
+			if e.validateAllmCandidate(memFile, firstM, knownTIDs) {
+				addr := sectionStart + offset
+				fmt.Printf("[Engine] Found allm in %s at %x\n", secName, addr)
+				if e.isPIE {
+					addr -= e.baseAddr
+				}
+				return addr, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("allm not found via heuristic in any section")
+}
+
+// simply checks if candidate is valid by confrointing extracted TIDs with process TIDs
+// odds of false positive are now ^3 (maxWalk = 3), which means i's virtually impossible to fall for one
+func (e *Engine) validateAllmCandidate(memFile *os.File, firstM uint64, knownTIDs map[uint32]bool) bool {
+	const maxWalk = 3
+	current := firstM
+	matchedAtLeastOne := false
+
+	for i := 0; i < maxWalk && current != 0; i++ {
+		if current < 0x10000 || current > 0x800000000000 {
+			return false
+		}
+		procid, err := e.readUint64(memFile, current+uint64(e.mProcidOffset))
+		if err != nil {
+			return false
+		}
+		if procid != 0 {
+			if !knownTIDs[uint32(procid)] {
+				return false // false positive
+			}
+			matchedAtLeastOne = true
+		}
+		next, err := e.readUint64(memFile, current+uint64(e.mAlllinkOffset))
+		if err != nil {
+			return false
+		}
+		current = next
+	}
+	return matchedAtLeastOne // refuses candidates with all procid == 0
+}
+
+func getRealTIDs(pid int) (map[uint32]bool, error) {
+	taskPath := fmt.Sprintf("/proc/%d/task", pid)
+	entries, err := os.ReadDir(taskPath)
+	if err != nil {
+		return nil, err
+	}
+	tids := make(map[uint32]bool, len(entries))
+	for _, e := range entries {
+		tid, err := strconv.ParseUint(e.Name(), 10, 32)
+		if err == nil {
+			tids[uint32(tid)] = true
+		}
+	}
+	return tids, nil
+}
+
+func getNoptrdataRange(f *elf.File) (start, size uint64, err error) {
+	sec := f.Section(".noptrdata")
+	if sec == nil {
+		return 0, 0, fmt.Errorf(".noptrdata section not found")
+	}
+	return sec.Addr, sec.Size, nil
+}
+
+////EXTREME ALLM RECOVERY PROCESS ENDS////
+
 func (e *Engine) scanExistingGoThreads(baseAddr uint64) (map[uint32]bool, error) {
 	memPath := fmt.Sprintf("/proc/%d/mem", e.config.TargetTgid)
 	memFile, err := os.Open(memPath)
@@ -425,6 +582,9 @@ func (e *Engine) scanExistingGoThreads(baseAddr uint64) (map[uint32]bool, error)
 	// PIE implies that the os can load the programm at a random access (ASLR)
 	// If not symbols extracted from ELF are allready absolute virtual addresses
 	allMAddr := e.allmAddr
+	if allMAddr == 0 {
+		return nil, fmt.Errorf("allm address is 0, cannot scan threads")
+	}
 	if e.isPIE {
 		allMAddr += baseAddr
 	}
@@ -551,17 +711,13 @@ func (e *Engine) Start(ctx context.Context) error {
 
 		if e.isGoBinary {
 			fmt.Printf("Live hooking: scanning for existing Go threads...\n")
-			base, err := e.getProcessBaseAddress()
+			// e.baseAddr is already calculated in elfManagement
+			tids, err := e.scanExistingGoThreads(e.baseAddr)
 			if err == nil {
-				tids, err := e.scanExistingGoThreads(base)
-				if err == nil {
-					fmt.Printf("Found %d existing Go threads. Marking them in BPF...\n", len(tids))
-					e.applyGoThreadMarkers(tids)
-				} else {
-					fmt.Printf("Warning: failed to scan Go threads: %v\n", err)
-				}
+				fmt.Printf("Found %d existing Go threads. Marking them in BPF...\n", len(tids))
+				e.applyGoThreadMarkers(tids)
 			} else {
-				fmt.Printf("Warning: failed to get base address: %v\n", err)
+				fmt.Printf("Warning: failed to scan Go threads: %v\n", err)
 			}
 		}
 
