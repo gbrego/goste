@@ -40,6 +40,7 @@ type Config struct {
 	TargetTgid        int
 	IsChildProcess    bool
 	SkipPrivilegeDrop bool
+	LeastPrivilege    bool
 }
 
 const (

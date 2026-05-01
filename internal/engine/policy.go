@@ -44,7 +44,7 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 		}
 	}
 
-	finalizedSyscalls, nextStates := flowBasedBackpropagation(stateMap, numStates)
+	finalizedSyscalls, nextStates := flowBasedBackpropagation(stateMap, numStates, e.config.LeastPrivilege)
 
 	policy := &Policy{
 		Binary: e.config.BinaryPath,
@@ -71,7 +71,7 @@ func (e *Engine) CollectPolicy() (*Policy, error) {
 
 // flowBasedBackpropagation implements a leaner version of Kosaraju's algorithm
 // with in-place back-propagation, mirroring SysComb's logic.
-func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32) (map[uint32][]bool, [][]uint32) {
+func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32, leastPrivilege bool) (map[uint32][]bool, [][]uint32) {
 	adj := make([][]uint32, num)
 	rev := make([][]uint32, num)
 	perms := make([][]bool, num)
@@ -90,6 +90,14 @@ func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32)
 				rev[j] = append(rev[j], i)
 			}
 		}
+	}
+
+	if leastPrivilege {
+		resPerms := make(map[uint32][]bool)
+		for i := uint32(0); i < num; i++ {
+			resPerms[i] = perms[i]
+		}
+		return resPerms, adj
 	}
 
 	// Phase 1: DFS on REVERSED graph to fill stack (SysComb style)

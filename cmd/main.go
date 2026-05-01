@@ -59,6 +59,7 @@ func runTrace() {
 	traceCmd.Var(&symbolsFlag, "s", "Symbol to trace for state transitions in format [path:]symbol (can be specified multiple times)")
 	pidFlag := traceCmd.Int("p", 0, "Trace all tasks that share the specified TGID (PID in userspace)")
 	skipPrivilegeDropFlag := traceCmd.Bool("skip-privilege-drop", false, "Do not drop sudo privileges for the target application")
+	leastPrivilegeFlag := traceCmd.Bool("least-privilege", false, "Do not apply syscall fallback to previous states (tracing only)")
 
 	traceCmd.Parse(os.Args[2:])
 
@@ -107,6 +108,7 @@ func runTrace() {
 		TargetTgid:        *pidFlag,
 		IsChildProcess:    isChildProcess,
 		SkipPrivilegeDrop: *skipPrivilegeDropFlag,
+		LeastPrivilege:    *leastPrivilegeFlag,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create engine: %v\n", err)
