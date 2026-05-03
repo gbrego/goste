@@ -1,1 +1,2 @@
 bpf/vmlinux/x86/vmlinux.h linguist-vendored
+benchmark/** linguist-vendored
