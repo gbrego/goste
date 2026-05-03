@@ -17,3 +17,8 @@ compile_flags.txt
 .idea/
 *.swp
 *.swo
+
+# Benchmark
+benchmark/results/
+benchmark/__pycache__/
+benchmark/targets/__pycache__/

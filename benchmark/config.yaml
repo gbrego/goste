@@ -1,0 +1,105 @@
+# GoSTE Benchmark Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# All paths are resolved relative to the benchmark/ directory unless absolute.
+# Run the harness as root (required for GoSTE / eBPF):
+#   sudo python3 harness.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Path to the compiled GoSTE binary
+goste_binary: "../goste"
+
+# ── Global timing parameters ─────────────────────────────────────────────────
+runs: 2             # repetitions per mode (baseline / tracing / enforcement)
+warmup_secs: 2      # seconds to let the target warm up before measuring
+duration_secs: 10   # measurement window (or safety timeout for oneshot load generators)
+cooldown_secs: 2    # pause between consecutive runs (let system settle)
+
+# ── Target definitions ────────────────────────────────────────────────────────
+# Each target can specify:
+#   binary        – path to the target executable
+#   args          – list of extra arguments to pass to the binary
+#   policy        – (optional) path to a pre-generated policy JSON.
+#                   If omitted, the policy is auto-generated from the tracing
+#                   runs and saved to results/<target>_policy.json.
+#   state_symbols – symbols to use as state-transition triggers in GoSTE.
+#                   Format: "pkg/path.Function" (same as -s flag).
+#                   Leave empty [] for stateless tracing.
+#   load_generator – (optional) tool to stress the target during measurement.
+#                   binary + args are launched as a separate subprocess.
+#   enabled       – set to false to skip this target entirely.
+
+targets:
+
+  # ── etcd ──────────────────────────────────────────────────────────────────
+  etcd:
+    enabled: true
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargets/strippedTargets/etcd-v3.6.10-linux-amd64/etcd"
+    args: []
+    # policy: "results/etcd_policy.json"   # uncomment to use a pre-built policy
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+    load_generator:
+      # type: oneshot  → measurement window = job runtime (duration_secs is a safety timeout)
+      # type: continuous → fixed duration_secs window (default)
+      type: oneshot
+      binary: "/home/brego/go/bin/benchmark"
+      args:
+        # Global flags come BEFORE the subcommand
+        - "--endpoints=http://localhost:2379"
+        - "--clients=10"   # number of concurrent gRPC clients (replaces --conc)
+        - "--conns=10"     # number of gRPC connections
+        # Subcommand + its flags
+        - "put"
+        - "--key-size=8"
+        - "--val-size=256"
+        - "--total=100000"
+
+  # ── CoreDNS ───────────────────────────────────────────────────────────────
+  coredns:
+    enabled: false
+    binary: "/usr/local/bin/coredns"
+    args: ["-conf", "targets/Corefile"]
+    # policy: "results/coredns_policy.json"
+    state_symbols: []
+    load_generator:
+      binary: "dnsperf"
+      args:
+        - "-s"
+        - "127.0.0.1"
+        - "-d"
+        - "targets/queries.txt"
+        - "-l"
+        - "30"
+
+  # ── geth (Go Ethereum) ────────────────────────────────────────────────────
+  geth:
+    enabled: false
+    binary: "/usr/local/bin/geth"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    # policy: "results/geth_policy.json"
+    state_symbols: []
+    load_generator: null    # use an external script or leave null
+
+  # ── frp (Fast Reverse Proxy) server ───────────────────────────────────────
+  frp:
+    enabled: false
+    binary: "/usr/local/bin/frps"
+    args: ["-c", "targets/frps.toml"]
+    # policy: "results/frp_policy.json"
+    state_symbols: []
+    load_generator: null
+
+  # ── Synthetic Go target (optional, for controlled experiments) ────────────
+  # synthetic:
+  #   enabled: false
+  #   binary: "targets/synthetic/synthetic"   # compile with: go build -o synthetic .
+  #   args: ["--rate=10000"]
+  #   state_symbols:
+  #     - "main.StateA"
+  #     - "main.StateB"
+  #   load_generator: null
