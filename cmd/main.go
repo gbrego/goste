@@ -65,6 +65,7 @@ func runTrace() {
 
 	isChildProcess := *pidFlag == 0
 	targetPath := ""
+	var targetArgs []string
 
 	if !isChildProcess {
 		targetPath = fmt.Sprintf("/proc/%d/exe", *pidFlag)
@@ -75,11 +76,12 @@ func runTrace() {
 		}
 	} else {
 		if traceCmd.NArg() < 1 {
-			fmt.Println("Usage: goste trace [options] <binary-to-trace>")
+			fmt.Println("Usage: goste trace [options] <binary-to-trace> [args...]")
 			traceCmd.PrintDefaults()
 			os.Exit(1)
 		}
 		targetPath = traceCmd.Arg(0)
+		targetArgs = traceCmd.Args()[1:]
 	}
 	var stateSymbols []engine.StateSymbol
 	for _, s := range symbolsFlag {
@@ -103,6 +105,7 @@ func runTrace() {
 
 	e, err := engine.NewEngine(engine.Config{
 		BinaryPath:        targetPath,
+		Args:              targetArgs,
 		IsTracing:         true,
 		StateSymbols:      stateSymbols,
 		TargetTgid:        *pidFlag,
@@ -155,6 +158,7 @@ func runEnforce() {
 	isChildProcess := *pidFlag == 0
 	targetPath := ""
 	policyPath := ""
+	var targetArgs []string
 
 	if !isChildProcess {
 		targetPath = fmt.Sprintf("/proc/%d/exe", *pidFlag)
@@ -172,12 +176,13 @@ func runEnforce() {
 	} else {
 		// Required: policy path and target binary
 		if enforceCmd.NArg() < 2 {
-			fmt.Println("Usage: goste enforce -a <action> <policy.json> <binary-to-trace>")
+			fmt.Println("Usage: goste enforce -a <action> <policy.json> <binary-to-trace> [args...]")
 			enforceCmd.PrintDefaults()
 			os.Exit(1)
 		}
 		policyPath = enforceCmd.Arg(0)
 		targetPath = enforceCmd.Arg(1)
+		targetArgs = enforceCmd.Args()[2:]
 	}
 
 	actionMap := map[string]uint32{
@@ -204,6 +209,7 @@ func runEnforce() {
 
 	e, err := engine.NewEngine(engine.Config{
 		BinaryPath:        targetPath,
+		Args:              targetArgs,
 		IsTracing:         false,
 		EnforceAction:     actionID,
 		Policy:            policy,

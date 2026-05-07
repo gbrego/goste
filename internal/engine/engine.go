@@ -7,6 +7,7 @@ import (
 	"goste/internal/bpf"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
 	"syscall"
 
@@ -32,6 +33,7 @@ type StateSymbol struct {
 // Config holds the configuration for the GoSTE Engine.
 type Config struct {
 	BinaryPath    string
+	Args          []string
 	IsTracing     bool
 	EnforceAction uint32
 	StateSymbols  []StateSymbol
@@ -792,7 +794,7 @@ func (e *Engine) loadBpfObjects() error {
 
 // This function is to be skipped when attaching to a live process (PID provided by user)
 func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
-	cmd := exec.CommandContext(ctx, e.config.BinaryPath)
+	cmd := exec.CommandContext(ctx, e.config.BinaryPath, e.config.Args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -815,6 +817,18 @@ func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 						Gid: uint32(gid),
 					}
 					fmt.Printf("[Engine] Dropping target process privileges to uid=%d gid=%d\n", uid, gid)
+
+					// Restore HOME and USER environment variables for the dropped privilege user
+					if u, err := user.LookupId(sudoUID); err == nil {
+						cmd.Env = os.Environ()
+						for i, env := range cmd.Env {
+							if strings.HasPrefix(env, "HOME=") {
+								cmd.Env[i] = "HOME=" + u.HomeDir
+							} else if strings.HasPrefix(env, "USER=") {
+								cmd.Env[i] = "USER=" + u.Username
+							}
+						}
+					}
 				}
 			}
 		}
