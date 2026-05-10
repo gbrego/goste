@@ -168,33 +168,32 @@ def write_summary(results: List[Dict[str, Any]], output_path: str) -> None:
                 row += f"{cell:>{col_w}}"
             lines.append(row)
 
-        # GoSTE overhead section (cpu/rss consumed by the goste wrapper itself)
-        goste_modes = [
-            m for m in modes_present
-            if m != "baseline" and any(
-                r.get("goste_metrics") for r in by_mode.get(m, [])
-            )
-        ]
-        if goste_modes:
+        # GoSTE overhead section: real overhead = delta between baseline and tracing/enforcement
+        # Note: GoSTE eBPF code runs in the context of the target process, so its cost
+        # appears in the target's cpu_sys_ms, not in the GoSTE wrapper process metrics.
+        goste_modes = [m for m in modes_present if m != "baseline"]
+        if goste_modes and baseline:
             lines.append("")
-            lines.append(f"  GoSTE wrapper overhead (additional CPU/mem):")
+            lines.append("  GoSTE overhead (delta over baseline):")
             for mode in goste_modes:
-                goste_vals = [
-                    r["goste_metrics"]
-                    for r in by_mode[mode]
-                    if r.get("goste_metrics")
+                ms = mode_stats.get(mode, {})
+                d_cpu_sys  = ms.get("cpu_sys_ms_mean",  0) - baseline.get("cpu_sys_ms_mean",  0)
+                d_cpu_user = ms.get("cpu_user_ms_mean", 0) - baseline.get("cpu_user_ms_mean", 0)
+                d_wall     = ms.get("wall_time_ms_mean", 0) - baseline.get("wall_time_ms_mean", 0)
+                base_wall  = baseline.get("wall_time_ms_mean", 1)
+                pct_wall   = d_wall / base_wall * 100 if base_wall else 0
+                goste_rss_vals = [
+                    r["goste_metrics"]["rss_mb_peak"]
+                    for r in by_mode.get(mode, [])
+                    if r.get("goste_metrics") and "rss_mb_peak" in r["goste_metrics"]
                 ]
-                if not goste_vals:
-                    continue
-                sys_mean = statistics.mean(
-                    v["cpu_sys_ms"] for v in goste_vals if "cpu_sys_ms" in v
-                )
-                rss_mean = statistics.mean(
-                    v["rss_mb_peak"] for v in goste_vals if "rss_mb_peak" in v
-                )
+                goste_rss = statistics.mean(goste_rss_vals) if goste_rss_vals else 0.0
                 lines.append(
-                    f"    {mode:<14}  cpu_sys={sys_mean:>8.1f} ms   "
-                    f"rss_peak={rss_mean:>6.1f} MB"
+                    f"    {mode:<14}  "
+                    f"Δcpu_sys={d_cpu_sys:>+8.0f} ms   "
+                    f"Δcpu_user={d_cpu_user:>+8.0f} ms   "
+                    f"Δwall={d_wall:>+7.0f} ms ({pct_wall:>+.1f}%)   "
+                    f"goste_rss={goste_rss:>5.1f} MB"
                 )
 
         lines.append("")

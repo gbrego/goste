@@ -177,7 +177,7 @@ def generate_policy(
 
     try:
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            cmd, stdout=None, stderr=None
         )
     except FileNotFoundError as exc:
         log.error("[policy-gen] Failed to start GoSTE: %s", exc)
@@ -283,8 +283,8 @@ def execute_run(
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=None,              # Inherit stdout to avoid pipe deadlock
+            stderr=None,              # Inherit stderr to avoid pipe deadlock
             start_new_session=True,   # isolate signal groups
         )
     except FileNotFoundError as exc:
@@ -671,11 +671,15 @@ def main() -> None:
 
     targets_cfg: Dict[str, Any] = cfg.get("targets", {})
     for tname, tcfg in targets_cfg.items():
-        if not tcfg.get("enabled", True):
-            log.info("Skipping disabled target: %s", tname)
-            continue
-        if selected_targets and tname not in selected_targets:
-            continue
+        # If specific targets were requested on the CLI, only run those (ignore 'enabled' flag)
+        if selected_targets:
+            if tname not in selected_targets:
+                continue
+        else:
+            # If no specific targets, only run those that are enabled
+            if not tcfg.get("enabled", True):
+                log.info("Skipping disabled target: %s", tname)
+                continue
 
         try:
             results = benchmark_target(

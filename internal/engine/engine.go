@@ -51,7 +51,7 @@ const (
 	ActionKill  uint32 = 2
 
 	MaxSyscalls = 512
-	MaxStates   = 16
+	MaxStates   = 64
 
 	GoThreadMarker uint32 = 0xFFFFFFFF
 

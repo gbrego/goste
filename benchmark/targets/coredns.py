@@ -19,4 +19,5 @@ class CoreDNSAdapter(TargetAdapter):
         return [self.binary()] + self.extra_args()
 
     def ready_host_port(self) -> Tuple[str, int]:
-        return ("127.0.0.1", self.DEFAULT_DNS_PORT)
+        port = self.cfg.get("port", self.DEFAULT_DNS_PORT)
+        return ("127.0.0.1", port)

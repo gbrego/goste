@@ -13,7 +13,7 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define GO_THREAD_MARKER 0xFFFFFFFF
 
 #define NOF_SYSCALLS 512
-#define MAX_STATES 16
+#define MAX_STATES 64
 
 /* From include/uapi/asm-generic/signal.h */
 #define SIGKILL 9
@@ -348,8 +348,12 @@ static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
 
     if (*state_id == GO_THREAD_MARKER) {
       state_id = get_goroutine_state_id(regs);
-      if (!state_id)
-        return 0;
+      // If the goroutine state cannot be retrieved it means that i's the go
+      // runtime itself doing some syscall with a M he choose, fallback to safe
+      // safe state 0
+      if (!state_id) {
+        state_id = &root_state_id;
+      }
     }
 
     state = bpf_map_lookup_elem(&state_map, state_id);
@@ -599,8 +603,22 @@ int override_syscall_filter(struct pt_regs *ctx) {
 
   syscall_id = bpf_get_attach_cookie(ctx);
 
-  //
-  // bpf_printk("syscall detected: %d", syscall_id);
+  // MOMENTARY HOPEFULLY NOT DEFINITIVE
+  // it feels inheretly wrong, however, for most targets it could be essential
+
+  // --- RUNTIME SAFETY NET ---
+  // Always allow critical syscalls that the Go runtime needs for stability.
+  // Blocking these (especially futex) causes recursive panics and deadlocks.
+  if (syscall_id == 15 ||  // rt_sigreturn
+      syscall_id == 202 || // futex
+      syscall_id == 24 ||  // sched_yield
+      syscall_id == 14 ||  // rt_sigprocmask
+      syscall_id == 231 || // exit_group
+      syscall_id == 28     // madvise (often used by GC)
+  ) {
+    return 0;
+  }
+  // --------------------------
 
   // This is what seccomp does to distinguish 32-bit syscalls belonging to
   // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs

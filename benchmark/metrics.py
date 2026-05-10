@@ -43,12 +43,17 @@ class _Snapshot:
 
 def _read_snapshot(pid: int) -> _Snapshot:
     """Read a single snapshot for *pid* from /proc.  Returns a zeroed
-    snapshot with alive=False if the process no longer exists."""
+    snapshot with alive=False if the process no longer exists.
+
+    NOTE: /proc/<pid>/stat at the process level already aggregates CPU time
+    across ALL threads via thread_group_cputime() in the kernel (do_task_stat
+    with whole=1). There is no need to iterate /proc/<pid>/task/.
+    """
     snap = _Snapshot(timestamp=time.monotonic())
 
     # /proc/<pid>/stat  ─────────────────────────────────────────────────────
     # Field indices (0-based, after the comm field workaround):
-    #   13 → utime, 14 → stime, 23 → vsize (bytes), 24 → rss (pages)
+    #   13 → utime (aggregate all threads), 14 → stime (aggregate all threads)
     try:
         with open(f"/proc/{pid}/stat") as fh:
             raw = fh.read()
@@ -126,6 +131,12 @@ class MetricsCollector:
             self._thread.join(timeout=self.interval * 3)
 
     def _loop(self) -> None:
+        # Take an immediate snapshot at t=0 to anchor cumulative counters
+        # (ctx-sw, CPU ticks) from the start of the measurement window.
+        # Without this, the first sample arrives after 'interval' seconds,
+        # missing any work done in that gap (especially critical for fast
+        # baseline runs where most ctx-sw happen during startup/warmup).
+        self._snapshots.append(_read_snapshot(self.pid))
         while not self._stop.wait(self.interval):
             self._snapshots.append(_read_snapshot(self.pid))
 

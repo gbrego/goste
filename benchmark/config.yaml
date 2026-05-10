@@ -30,36 +30,116 @@ cooldown_secs: 2    # pause between consecutive runs (let system settle)
 
 targets:
 
-  # ── etcd ──────────────────────────────────────────────────────────────────
-  etcd:
-    enabled: true
-    binary: "/home/brego/Documents/Uni/Tesi/industryTargets/strippedTargets/etcd-v3.6.10-linux-amd64/etcd"
-    args: []
-    # policy: "results/etcd_policy.json"   # uncomment to use a pre-built policy
+  # ── etcd (Light/Baseline) ──────────────────────────────────────────────────
+  # Original test: 100k puts, 10 clients. Good for a quick baseline.
+  etcd_light:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: ["--data-dir=default.etcd"]
     state_symbols:
       - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
     load_generator:
-      # type: oneshot  → measurement window = job runtime (duration_secs is a safety timeout)
-      # type: continuous → fixed duration_secs window (default)
       type: oneshot
-      binary: "/home/brego/go/bin/benchmark"
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
       args:
-        # Global flags come BEFORE the subcommand
         - "--endpoints=http://localhost:2379"
-        - "--clients=10"   # number of concurrent gRPC clients (replaces --conc)
-        - "--conns=10"     # number of gRPC connections
-        # Subcommand + its flags
+        - "--clients=10"
+        - "--conns=10"
         - "put"
         - "--key-size=8"
         - "--val-size=256"
         - "--total=100000"
 
-  # ── CoreDNS ───────────────────────────────────────────────────────────────
-  coredns:
+  # ── etcd (Intensive Overhead Stress) ───────────────────────────────────────
+  # Stresses the syscall interposer and goroutine tracking.
+  # Uses /dev/shm (RAM disk) to eliminate I/O wait and maximize CPU/BPF load.
+  etcd_intensive:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: 
+      - "--data-dir=/dev/shm/etcd_bench.data"
+      - "--quota-backend-bytes=8589934592"
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Put"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Range"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).DeleteRange"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Txn"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Compact"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseGrant"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseRevoke"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*AuthServer).Authenticate"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Defragment"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Snapshot"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*watchableStore).notify"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Put"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Get"
+      - "go.etcd.io/etcd/server/v3/storage/wal.(*filePipeline).run"
+      - "go.etcd.io/bbolt.(*Tx).Commit"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=200"   # High concurrency to stress syscall interposer
+        - "--conns=100"
+        - "put"
+        - "--key-size=8"
+        - "--val-size=128"   # Smaller size = more requests/sec = more syscalls/sec
+        - "--total=500000"
+
+  # ── etcd (Data Heavy - Serialization Stress) ──────────────────────────────
+  # Stresses GoSTE during large data handling. Large Protobuf buffers increase
+  # CPU time per goroutine, while large write() syscalls test tracing latency 
+  # on data-heavy I/O operations.
+  etcd_data_heavy:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: ["--data-dir=/dev/shm/etcd_data.data"]
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=20"
+        - "--conns=10"
+        - "put"
+        - "--key-size=8"
+        - "--val-size=1048576" # 1MB values
+        - "--total=5000"
+
+  # ── etcd (Logic Heavy - Transactional Stress) ─────────────────────────────
+  # Stresses GoSTE's state tracking over complex execution paths. Uses 
+  # STM (Software Transactional Memory) to trigger deep internal etcd logic
+  # and multiple state-dependent syscalls per operation.
+  etcd_logic_heavy:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: ["--data-dir=/dev/shm/etcd_logic.data"]
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).Process"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=50"
+        - "--conns=10"
+        - "stm"
+        - "--total=20000"
+        - "--keys=1000"
+        - "--keys-per-txn=5"
+        - "--isolation=s"
+
+  # ── CoreDNS (High Throughput) ─────────────────────────────────────────────
+  # Very high throughput of small UDP packets. 
+  # Excellent for measuring syscall and network processing overhead.
+  coredns_stress:
     enabled: false
     binary: "/usr/local/bin/coredns"
     args: ["-conf", "targets/Corefile"]
-    # policy: "results/coredns_policy.json"
     state_symbols: []
     load_generator:
       binary: "dnsperf"
@@ -69,7 +149,9 @@ targets:
         - "-d"
         - "targets/queries.txt"
         - "-l"
-        - "30"
+        - "20"
+        - "-c"
+        - "100"
 
   # ── geth (Go Ethereum) ────────────────────────────────────────────────────
   geth:
@@ -81,25 +163,56 @@ targets:
       - "--http.addr=127.0.0.1"
       - "--http.port=8545"
       - "--verbosity=0"
-    # policy: "results/geth_policy.json"
     state_symbols: []
-    load_generator: null    # use an external script or leave null
+    load_generator: null
 
   # ── frp (Fast Reverse Proxy) server ───────────────────────────────────────
   frp:
     enabled: false
     binary: "/usr/local/bin/frps"
     args: ["-c", "targets/frps.toml"]
-    # policy: "results/frp_policy.json"
     state_symbols: []
     load_generator: null
 
-  # ── Synthetic Go target (optional, for controlled experiments) ────────────
-  # synthetic:
-  #   enabled: false
-  #   binary: "targets/synthetic/synthetic"   # compile with: go build -o synthetic .
-  #   args: ["--rate=10000"]
-  #   state_symbols:
-  #     - "main.StateA"
-  #     - "main.StateB"
-  #   load_generator: null
+  # ── CoreDNS (Intensive Tracing) ───────────────────────────────────────────
+  coredns_intensive:
+    enabled: true
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/coredns"
+    args: 
+      - "-conf"
+      - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/Corefile"
+    port: 1053
+    state_symbols:
+      - "github.com/coredns/coredns/core/dnsserver.(*Server).ServePacket"
+      - "github.com/coredns/coredns/core/dnsserver.(*Server).ServeDNS"
+      - "github.com/coredns/coredns/core/dnsserver.errorFunc"
+      - "github.com/coredns/coredns/request.(*Request).NewWithQuestion"
+      - "github.com/coredns/coredns/plugin.NextOrFailure"
+      - "github.com/coredns/coredns/plugin.(*pluginWriter).WriteMsg"
+      - "github.com/coredns/coredns/plugin/errors.(*errorHandler).ServeDNS"
+      - "github.com/coredns/coredns/plugin/log.Logger.ServeDNS"
+      - "github.com/coredns/coredns/plugin/metrics.(*Metrics).ServeDNS"
+      - "github.com/coredns/coredns/plugin/cache.(*Cache).ServeDNS"
+      - "github.com/coredns/coredns/plugin/rewrite.Rewrite.ServeDNS"
+      - "github.com/coredns/coredns/plugin/kubernetes.Kubernetes.ServeDNS"
+      - "github.com/coredns/coredns/plugin/forward.(*Forward).ServeDNS"
+      - "github.com/coredns/coredns/plugin/file.File.ServeDNS"
+      - "github.com/coredns/coredns/plugin/hosts.Hosts.ServeDNS"
+      - "github.com/coredns/coredns/plugin/loadbalance.LoadBalance.ServeDNS"
+      - "github.com/coredns/coredns/plugin/whoami.Whoami.ServeDNS"
+    load_generator:
+      type: oneshot
+      binary: "dnsperf"
+      args:
+        - "-s"
+        - "127.0.0.1"
+        - "-p"
+        - "1053"
+        - "-d"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/queries.txt"
+        - "-c"
+        - "100"
+        - "-Q"
+        - "50000"
+        - "-l"
+        - "20"
