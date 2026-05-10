@@ -609,6 +609,7 @@ int override_syscall_filter(struct pt_regs *ctx) {
   // --- RUNTIME SAFETY NET ---
   // Always allow critical syscalls that the Go runtime needs for stability.
   // Blocking these (especially futex) causes recursive panics and deadlocks.
+  /*
   if (syscall_id == 15 ||  // rt_sigreturn
       syscall_id == 202 || // futex
       syscall_id == 24 ||  // sched_yield
@@ -618,6 +619,7 @@ int override_syscall_filter(struct pt_regs *ctx) {
   ) {
     return 0;
   }
+  */
   // --------------------------
 
   // This is what seccomp does to distinguish 32-bit syscalls belonging to
