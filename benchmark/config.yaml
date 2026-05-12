@@ -9,9 +9,9 @@
 goste_binary: "../goste"
 
 # ── Global timing parameters ─────────────────────────────────────────────────
-runs: 2             # repetitions per mode (baseline / tracing / enforcement)
+runs: 5             # repetitions per mode (baseline / tracing / enforcement)
 warmup_secs: 2      # seconds to let the target warm up before measuring
-duration_secs: 10   # measurement window (or safety timeout for oneshot load generators)
+duration_secs: 120  # measurement window (continuous) or safety timeout (oneshot load generators)
 cooldown_secs: 2    # pause between consecutive runs (let system settle)
 
 # ── Target definitions ────────────────────────────────────────────────────────
@@ -133,47 +133,6 @@ targets:
         - "--keys-per-txn=5"
         - "--isolation=s"
 
-  # ── CoreDNS (High Throughput) ─────────────────────────────────────────────
-  # Very high throughput of small UDP packets. 
-  # Excellent for measuring syscall and network processing overhead.
-  coredns_stress:
-    enabled: false
-    binary: "/usr/local/bin/coredns"
-    args: ["-conf", "targets/Corefile"]
-    state_symbols: []
-    load_generator:
-      binary: "dnsperf"
-      args:
-        - "-s"
-        - "127.0.0.1"
-        - "-d"
-        - "targets/queries.txt"
-        - "-l"
-        - "20"
-        - "-c"
-        - "100"
-
-  # ── geth (Go Ethereum) ────────────────────────────────────────────────────
-  geth:
-    enabled: false
-    binary: "/usr/local/bin/geth"
-    args:
-      - "--dev"
-      - "--http"
-      - "--http.addr=127.0.0.1"
-      - "--http.port=8545"
-      - "--verbosity=0"
-    state_symbols: []
-    load_generator: null
-
-  # ── frp (Fast Reverse Proxy) server ───────────────────────────────────────
-  frp:
-    enabled: false
-    binary: "/usr/local/bin/frps"
-    args: ["-c", "targets/frps.toml"]
-    state_symbols: []
-    load_generator: null
-
   # ── CoreDNS (Intensive Tracing) ───────────────────────────────────────────
   coredns_intensive:
     enabled: true
@@ -212,7 +171,174 @@ targets:
         - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/queries.txt"
         - "-c"
         - "100"
-        - "-Q"
-        - "50000"
         - "-n"
         - "50000"
+
+  # ── geth (Intensive RPC Stress) ────────────────────────────────────────────
+  # Stresses the JSON-RPC layer, EVM execution, and state trie operations.
+  # Uses --dev mode for a private single-node chain with instant mining.
+  # The IPC socket /tmp/geth.ipc is cleaned up automatically before each run.
+  geth_intensive:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyTransaction"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).SetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Update"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).GasPrice"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).MaxPriorityFeePerGas"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).FeeHistory"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).BlobBaseFee"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).Syncing"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).ChainId"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).BlockNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBalance"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetProof"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetHeaderByNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetHeaderByHash"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBlockByNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBlockByHash"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleByBlockNumberAndIndex"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleByBlockHashAndIndex"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleCountByBlockNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleCountByBlockHash"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).validJumpdest"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).isCode"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).GetOp"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Caller"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).UseGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).RefundGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Address"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Value"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).SetCallCode"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).RequiredGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).Run"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).Name"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).RequiredGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).Run"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).Name"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/rawdb.ReadBlock"
+      - "github.com/ethereum/go-ethereum/core/txpool.(*TxPool).Add"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Prove"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Copy"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_payload.json"
+        - "-c"
+        - "100"
+        - "-n"
+        - "10000"
+        - "http://localhost:8545"
+
+  # ── geth (EVM Computation Heavy) ───────────────────────────────────────────
+  # Favourable workload for GoSTE: each request triggers deep EVM bytecode
+  # execution (1000 KECCAK256 iterations via eth_call constructor simulation).
+  # The goroutine spends much more time inside each state than with simple
+  # read RPCs, so the uprobe/BPF overhead is amortised over more useful work.
+  # Uses eth_call with to:null so no signing or nonce management is needed.
+  geth_evm_heavy:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-heavy-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).validJumpdest"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).UseGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).GetOp"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "50"
+        - "-n"
+        - "5000"
+        - "http://localhost:8545"
+
+
+  # ── geth (EVM Computation Heavy - Optimized) ───────────────────────────────
+  # Macro-states only: demonstrates how overhead is amortized when tracing
+  # is not firing on every opcode.
+  geth_evm_refined:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-refined-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "50"
+        - "-n"
+        - "5000"
+        - "http://localhost:8545"

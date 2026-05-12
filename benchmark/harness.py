@@ -254,7 +254,10 @@ def execute_run(
         uses_goste = False
     elif mode == "tracing":
         auto_policy = os.path.join(results_dir, f"{adapter.name}_policy.json")
-        cmd = _build_trace_cmd(goste_bin, adapter, policy_path or auto_policy)
+        # Always write the traced policy to results/ — never overwrite a
+        # user-supplied custom policy (the 'policy' field in config.yaml is
+        # reserved exclusively for enforcement).
+        cmd = _build_trace_cmd(goste_bin, adapter, auto_policy)
         uses_goste = True
     elif mode == "enforcement":
         if not policy_path:
