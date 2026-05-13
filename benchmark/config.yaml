@@ -9,7 +9,7 @@
 goste_binary: "../goste"
 
 # ── Global timing parameters ─────────────────────────────────────────────────
-runs: 5             # repetitions per mode (baseline / tracing / enforcement)
+runs: 2             # repetitions per mode (baseline / tracing / enforcement)
 warmup_secs: 2      # seconds to let the target warm up before measuring
 duration_secs: 120  # measurement window (continuous) or safety timeout (oneshot load generators)
 cooldown_secs: 2    # pause between consecutive runs (let system settle)

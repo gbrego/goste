@@ -784,11 +784,49 @@ func (e *Engine) loadBpfObjects() error {
 			numStates = uint32(len(e.config.Policy.States))
 		}
 		m.MaxEntries = numStates
+
+		// Disable basic state transition program if only 1 state
+		if numStates == 1 {
+			delete(spec.Programs, "trigger_state_transition")
+		}
 	}
 
-	if err := spec.LoadAndAssign(&e.bpfObjects, nil); err != nil {
-		return fmt.Errorf("loading BPF objects: %w", err)
+	// Disable child process tracing if we are attaching to a live process
+	if !e.config.IsChildProcess {
+		delete(spec.Programs, "trace_entry_point")
 	}
+
+	// Disable unnecessary programs based on the operational mode
+	if e.config.IsTracing || (!e.config.IsTracing && e.config.EnforceAction == ActionLog) {
+		delete(spec.Programs, "override_syscall_filter")
+	} else {
+		delete(spec.Programs, "monitor_syscall_event")
+	}
+
+	//using NewCollection instead of LoadAndAssign to handle deleted programs
+	//there is no elegant way to do this currently with bpf2go, manual import is needed
+	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{})
+	if err != nil {
+		return fmt.Errorf("loading BPF collection: %w", err)
+	}
+
+	// Manually assign maps
+	e.bpfObjects.GoroutineTraceeMap = coll.Maps["goroutine_tracee_map"]
+	e.bpfObjects.PendingGoroutines = coll.Maps["pending_goroutines"]
+	e.bpfObjects.StateMap = coll.Maps["state_map"]
+	e.bpfObjects.TaskTraceeMap = coll.Maps["task_tracee_map"]
+
+	// Manually assign programs (missing ones will safely be nil)
+	e.bpfObjects.CompleteTraceNewGoroutine = coll.Programs["complete_trace_new_goroutine"]
+	e.bpfObjects.InheritStateInfo = coll.Programs["inherit_state_info"]
+	e.bpfObjects.MarkGoThread = coll.Programs["mark_go_thread"]
+	e.bpfObjects.MonitorSyscallEvent = coll.Programs["monitor_syscall_event"]
+	e.bpfObjects.OverrideSyscallFilter = coll.Programs["override_syscall_filter"]
+	e.bpfObjects.RemoveExitingGoroutine = coll.Programs["remove_exiting_goroutine"]
+	e.bpfObjects.TraceEntryPoint = coll.Programs["trace_entry_point"]
+	e.bpfObjects.TraceNewGoroutine = coll.Programs["trace_new_goroutine"]
+	e.bpfObjects.TriggerStateTransition = coll.Programs["trigger_state_transition"]
+
 	return nil
 }
 
