@@ -301,6 +301,41 @@ targets:
         - "5000"
         - "http://localhost:8545"
 
+  # ── geth (CGO and low-level syscalls) ──────────────────────────────────────
+  # Traces CGO transitions and cryptographic primitives.
+  geth_cgo:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/geth-cgo-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "secp256k1_ecdsa_recover"
+      - "secp256k1_ecdsa_verify"
+      - "x_cgo_sys_thread_create"
+      - "x_cgo_mmap"
+      - "crosscall2"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/cgo-payload.json"
+        - "-c"
+        - "50"
+        - "-n"
+        - "50000"
+        - "http://localhost:8545"
+
 
   # ── geth (EVM Computation Heavy - Optimized) ───────────────────────────────
   # Macro-states only: demonstrates how overhead is amortized when tracing
