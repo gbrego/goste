@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"runtime"
 	"syscall"
+	"time"
 
 	"bufio"
 	"debug/dwarf"
@@ -836,6 +837,22 @@ func (e *Engine) runTarget(ctx context.Context) (int, <-chan error, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+
+	cmd.Cancel = func() error {
+		fmt.Printf("\n[Engine] Propagating SIGTERM to child process (PID %d)...\n", cmd.Process.Pid)
+		// Try graceful termination first
+		err := cmd.Process.Signal(syscall.SIGTERM)
+
+		// Schedule a hard kill if it doesn't exit within a timeout
+		go func() {
+			time.Sleep(5 * time.Second)
+			if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
+				fmt.Printf("[Engine] Child process (PID %d) still alive after 5s, sending SIGKILL\n", cmd.Process.Pid)
+				cmd.Process.Kill()
+			}
+		}()
+		return err
+	}
 
 	// CONCEPT: ask kernel to stop task right after syscall 'exec'
 	cmd.SysProcAttr = &syscall.SysProcAttr{
