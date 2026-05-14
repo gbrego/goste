@@ -94,7 +94,9 @@ targets:
   etcd_data_heavy:
     enabled: false
     binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
-    args: ["--data-dir=/dev/shm/etcd_data.data"]
+    args: 
+      - "--data-dir=/dev/shm/etcd_data.data"
+      - "--quota-backend-bytes=8589934592"
     state_symbols:
       - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
     load_generator:
@@ -107,7 +109,7 @@ targets:
         - "put"
         - "--key-size=8"
         - "--val-size=1048576" # 1MB values
-        - "--total=5000"
+        - "--total=2000"
 
   # ── etcd (Logic Heavy - Transactional Stress) ─────────────────────────────
   # Stresses GoSTE's state tracking over complex execution paths. Uses 
