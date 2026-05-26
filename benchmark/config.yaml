@@ -308,7 +308,7 @@ targets:
   geth_cgo:
     enabled: false
     binary: "/home/brego/go/bin/geth"
-    policy: "/home/brego/geth-cgo-policy.json"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-cgo-policy.json"
     args:
       - "--dev"
       - "--http"
@@ -364,6 +364,35 @@ targets:
       - "github.com/ethereum/go-ethereum/crypto.Keccak256"
       - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
       - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "50"
+        - "-n"
+        - "5000"
+        - "http://localhost:8545"
+
+
+  geth_no_overhead:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-refined-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
     load_generator:
       type: oneshot
       binary: "hey"

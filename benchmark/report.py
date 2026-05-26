@@ -91,10 +91,10 @@ def write_summary(results: List[Dict[str, Any]], output_path: str) -> None:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     lines: List[str] = []
 
-    lines.append("=" * 78)
+    lines.append("=" * 88)
     lines.append("  GoSTE Benchmark Report")
     lines.append(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("=" * 78)
+    lines.append("=" * 88)
     lines.append("")
 
     # Group results by target
@@ -110,7 +110,7 @@ def write_summary(results: List[Dict[str, Any]], output_path: str) -> None:
 
         num_runs = max(len(v) for v in by_mode.values())
         lines.append(f"Target: {tname}   |   Runs per mode: {num_runs}")
-        lines.append("-" * 78)
+        lines.append("-" * 88)
 
         # Compute averages per mode
         mode_stats: Dict[str, Dict[str, float]] = {}
@@ -130,7 +130,7 @@ def write_summary(results: List[Dict[str, Any]], output_path: str) -> None:
         baseline = mode_stats.get("baseline", {})
 
         # Print table
-        col_w = 14
+        col_w = 20
         modes = ["baseline", "tracing", "enforcement"]
         modes_present = [m for m in modes if m in mode_stats]
 
@@ -198,9 +198,9 @@ def write_summary(results: List[Dict[str, Any]], output_path: str) -> None:
 
         lines.append("")
 
-    lines.append("=" * 78)
+    lines.append("=" * 88)
     lines.append("  End of Report")
-    lines.append("=" * 78)
+    lines.append("=" * 88)
 
     with open(output_path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
