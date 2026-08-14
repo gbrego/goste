@@ -13,7 +13,8 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define GO_THREAD_MARKER 0xFFFFFFFF
 
 #define NOF_SYSCALLS 512
-#define MAX_STATES 64
+#define MAX_STATES 256
+#define MAX_GOROUTINES 1048576
 
 /* From include/uapi/asm-generic/signal.h */
 #define SIGKILL 9
@@ -70,7 +71,7 @@ struct {
 // Value: u32 (Goroutine state_id)
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entries, 65536); // SHOULD COVER ALL GOROUTINES
+  __uint(max_entries, MAX_GOROUTINES);
   __type(key, struct goroutine_id);
   __type(value, __u32); // goroutine state_id
 } goroutine_tracee_map SEC(".maps");
@@ -80,8 +81,8 @@ struct {
 // Value: struct app_state (Policy: transition matrix and allowed syscalls)
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
-  __uint(max_entries, 256); // TO BE DEFINED IN USERSPACE
-  __type(key, __u32);       // state_id (which is simply the index of the array)
+  __uint(max_entries, MAX_STATES); // TO BE DEFINED IN USERSPACE
+  __type(key, __u32); // state_id (which is simply the index of the array)
   __type(value, struct app_state);
 } state_map SEC(".maps");
 
