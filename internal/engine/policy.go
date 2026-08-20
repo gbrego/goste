@@ -85,7 +85,7 @@ func flowBasedBackpropagation(stateMap map[uint32]bpf.GosteAppState, num uint32,
 			}
 		}
 		for j := uint32(0); j < MaxStates; j++ {
-			if s.NextState[j] != 0 {
+			if s.NextState[j] != 0 && j < num {
 				adj[i] = append(adj[i], j)
 				rev[j] = append(rev[j], i)
 			}
