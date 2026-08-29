@@ -254,7 +254,7 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   return 0;
 }
 
-SEC("uprobe/trace_new_goroutine")
+SEC("uprobe/runtime.newproc")
 int trace_new_goroutine(struct pt_regs *ctx) {
   __u64 parent_goid = get_goid((void *)ctx->r14);
   __u32 tgid = bpf_get_current_pid_tgid() >> 32;

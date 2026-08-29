@@ -165,9 +165,7 @@ func (e *Engine) elfManagement() error {
 	// This is needed for both stripped (heuristic) and unstripped (symbols/DWARF) PIE binaries.
 	if !e.config.IsChildProcess {
 		e.baseAddr, _ = e.getProcessBaseAddress()
-	}
-
-	if e.config.IsChildProcess {
+	} else {
 		var err error
 		e.entryPointOffset, err = e.virtualToOffset(f.Entry)
 		if err != nil {
@@ -231,14 +229,14 @@ func (e *Engine) elfManagement() error {
 					fmt.Printf("Detected goid offset for 'runtime.g.goid': %x\n", e.goidOffset)
 				}
 
-				//if !e.config.IsChildProcess {
-				e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
-				if err != nil {
-					fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
-				} else {
-					fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
+				if !e.config.IsChildProcess {
+					e.allmAddr, e.mProcidOffset, e.mAlllinkOffset, err = e.getMOffsets(f, d)
+					if err != nil {
+						fmt.Printf("Warning: extracting M offsets failed: %v\n", err)
+					} else {
+						fmt.Printf("Detected M offsets: allm=%x, procid=%x, alllink=%x\n", e.allmAddr, e.mProcidOffset, e.mAlllinkOffset)
+					}
 				}
-				//}
 			}
 		}
 	}
