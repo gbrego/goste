@@ -44,6 +44,7 @@ type Config struct {
 	IsChildProcess    bool
 	SkipPrivilegeDrop bool
 	LeastPrivilege    bool
+	EnableDebugLogs   bool
 }
 
 const (
@@ -741,6 +742,14 @@ func (e *Engine) loadBpfObjects() error {
 	if v, ok := spec.Variables["is_tracing"]; ok {
 		if err := v.Set(e.config.IsTracing); err != nil {
 			return fmt.Errorf("setting is_tracing variable: %w", err)
+		}
+	}
+
+	if e.config.EnableDebugLogs {
+		if v, ok := spec.Variables["enable_debug_logs"]; ok {
+			if err := v.Set(true); err != nil {
+				return fmt.Errorf("setting enable_debug_logs variable: %w", err)
+			}
 		}
 	}
 

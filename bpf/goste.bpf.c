@@ -25,6 +25,15 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 #define ACTION_KILL 2
 
 /* Execution mode: tracing vs enforcement */
+const volatile bool enable_debug_logs = false;
+
+#define debug_printk(fmt, ...) \
+    do { \
+        if (enable_debug_logs) { \
+            bpf_printk(fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
 const volatile bool is_tracing = true;
 const volatile __u32 enforce_action = 0;
 const volatile int error_code = 1; // Default to EPERM
@@ -152,7 +161,7 @@ int mark_go_thread(struct pt_regs *ctx) {
 
   *state = GO_THREAD_MARKER;
 
-  bpf_printk("New Go stask PID: %d", task->pid);
+  debug_printk("New Go stask PID: %d", task->pid);
 
   return 0;
 }
@@ -171,7 +180,7 @@ int trace_entry_point(struct pt_regs *ctx) {
   struct task_struct *task = bpf_get_current_task_btf();
   trace_task(task, NULL);
 
-  bpf_printk("Trace entry point triggered for PID %d. Task added to map.\n",
+  debug_printk("Trace entry point triggered for PID %d. Task added to map.\n",
              current_tgid);
 
   return 0;
@@ -237,7 +246,7 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   }
 
   if (!parent_state) {
-    bpf_printk("Warning: forked process %d could not inherit state from parent "
+    debug_printk("Warning: forked process %d could not inherit state from parent "
                "goroutine",
                child->pid);
     // add_to_tracee_map will assign state 0 as default since state is NULL
@@ -246,10 +255,10 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   __u32 *child_state = add_to_tracee_map(child, parent_state);
 
   if (!child_state) {
-    bpf_printk("Error: failed to inherit state for child PID %d", child->pid);
+    debug_printk("Error: failed to inherit state for child PID %d", child->pid);
     return 1;
   }
-  bpf_printk("State inherited: parent PID %d -> child PID %d (state_id=0x%x)",
+  debug_printk("State inherited: parent PID %d -> child PID %d (state_id=0x%x)",
              parent->pid, child->pid, *child_state);
   return 0;
 }
@@ -265,7 +274,7 @@ int trace_new_goroutine(struct pt_regs *ctx) {
 
   if (state_id) {
     state_to_save = *state_id;
-    bpf_printk("G_ENTRY: found parent goid=%llu in map, state=%d\n",
+    debug_printk("G_ENTRY: found parent goid=%llu in map, state=%d\n",
                parent_goid, state_to_save);
   } else {
     // bootstrap case, parent is not traced
@@ -278,7 +287,7 @@ int trace_new_goroutine(struct pt_regs *ctx) {
     // whole runtime is compromized and therefore goste is powerless
     if (task_state && *task_state != GO_THREAD_MARKER) {
       state_to_save = *task_state;
-      bpf_printk("G_ENTRY: bootstrap seed from task state=%d\n", state_to_save);
+      debug_printk("G_ENTRY: bootstrap seed from task state=%d\n", state_to_save);
     } else {
       return 0;
     }
@@ -311,7 +320,7 @@ int complete_trace_new_goroutine(struct pt_regs *ctx) {
   struct goroutine_id key = {.tgid = tgid, .goid = child_goid, ._pad = 0};
 
   bpf_map_update_elem(&goroutine_tracee_map, &key, &state_to_save, BPF_ANY);
-  bpf_printk("G_RUNQ: goid=%llu, state=%d, tid=%u\n", child_goid, state_to_save,
+  debug_printk("G_RUNQ: goid=%llu, state=%d, tid=%u\n", child_goid, state_to_save,
              (__u32)tgid_pid);
 
   return 0;

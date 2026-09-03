@@ -29,3 +29,5 @@ benchmark/targets/__pycache__/
 benchmark/micro/*.txt
 benchmark/micro/*.json
 benchmark/micro/*.test
+benchmark/micro/*.pdf
+
