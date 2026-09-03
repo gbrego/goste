@@ -19,6 +19,13 @@ compile_flags.txt
 *.swo
 
 # Benchmark
+
+#Macro
 benchmark/results/
 benchmark/__pycache__/
 benchmark/targets/__pycache__/
+
+# Micro
+benchmark/micro/*.txt
+benchmark/micro/*.json
+benchmark/micro/*.test

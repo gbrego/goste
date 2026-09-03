@@ -14,7 +14,7 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 
 #define NOF_SYSCALLS 512
 #define MAX_STATES 256
-#define MAX_GOROUTINES 1048576
+#define MAX_GOROUTINES 32768
 
 /* From include/uapi/asm-generic/signal.h */
 #define SIGKILL 9
