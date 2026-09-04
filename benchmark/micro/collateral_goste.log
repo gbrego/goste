@@ -1,0 +1,10 @@
+GoSTE Enforcement: ./micro.test using policy micro_policy.json (Action: log)
+Detected goid offset for 'runtime.g.goid': a0
+[Engine] Attaching state triggers to symbols: [{./micro.test goste/benchmark/micro.StateTransitionTrigger}]
+Engine ready. Starting target: ./micro.test
+[Engine] Dropping target process privileges to uid=1000 gid=1000
+Tracing task with PID: 16670
+
+[Engine] Propagating SIGTERM to child process (PID 16670)...
+
+[Engine] Target process (PID 16670) exited: signal: terminated

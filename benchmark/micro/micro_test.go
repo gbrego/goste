@@ -4,6 +4,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 //go:noinline
@@ -48,4 +49,13 @@ func BenchmarkParallelStateTransition(b *testing.B) {
 			StateTransitionTrigger()
 		}
 	})
+}
+
+func TestSleep(t *testing.T) {
+	time.Sleep(5 * time.Minute)
+}
+
+func TestShortSleep(t *testing.T) {
+	// 1s is enough to capture all Go runtime syscalls for policy generation.
+	time.Sleep(1 * time.Second)
 }

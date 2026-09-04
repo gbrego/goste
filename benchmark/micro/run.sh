@@ -46,29 +46,42 @@ echo "============================================="
 
 echo ""
 echo "--- Running Baseline ---"
-./micro.test -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > baseline.txt
+./micro.test -test.run=^$ -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > baseline.txt
 echo "Baseline completed."
 
 echo ""
 echo "--- Generating Enforcement Policy ---"
-# We run a full 1s trace to capture all asynchronous Go runtime syscalls (like epoll_create1, garbage collection, futex)
-sudo ../../goste trace -s "$SYMBOL" -o micro_policy.json -- ./micro.test -test.bench . -test.benchtime 1s -test.count 1 > /dev/null
+# Run benchmarks briefly under goste trace to capture all syscalls (close, clone, futex, etc.)
+sudo ../../goste trace -s "$SYMBOL" -o micro_policy.json -- ./micro.test -test.run=^$ -test.bench . -test.benchtime 1s -test.count 1 > /dev/null
 echo "Policy generated: micro_policy.json"
 
 echo ""
 echo "--- Running Tracing Mode ---"
-sudo ../../goste trace -s "$SYMBOL" -- ./micro.test -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > tracing.txt
+sudo ../../goste trace -s "$SYMBOL" -- ./micro.test -test.run=^$ -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > tracing.txt
 echo "Tracing completed."
 
 echo ""
 echo "--- Running Enforcement Mode (Log) ---"
-sudo ../../goste enforce -a log micro_policy.json ./micro.test -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > enforce_log.txt
+sudo ../../goste enforce -a log micro_policy.json ./micro.test -test.run=^$ -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > enforce_log.txt
 echo "Enforcement (Log) completed."
 
 echo ""
 echo "--- Running Enforcement Mode (Errno) ---"
-sudo ../../goste enforce -a errno micro_policy.json ./micro.test -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > enforce_errno.txt
+sudo ../../goste enforce -a errno micro_policy.json ./micro.test -test.run=^$ -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > enforce_errno.txt
 echo "Enforcement (Errno) completed."
+
+echo ""
+echo "--- Running Collateral Mode (Non-traced process, GoSTE active) ---"
+sudo ../../goste enforce -a log micro_policy.json ./micro.test -test.run=TestSleep > collateral_goste.log 2>&1 &
+GOSTE_PID=$!
+sleep 2 # Let it initialize
+if ! kill -0 $GOSTE_PID 2>/dev/null; then
+    echo "WARNING: goste died prematurely! Check collateral_goste.log"
+fi
+./micro.test -test.run=^$ -test.bench . -test.benchtime ${BENCH_TIME} -test.count ${BENCH_COUNT} > collateral.txt
+sudo kill $GOSTE_PID || true
+wait $GOSTE_PID 2>/dev/null || true
+echo "Collateral Mode completed."
 
 echo ""
 echo "============================================="
@@ -80,11 +93,12 @@ if command -v benchstat &> /dev/null; then
     grep "Benchmark" tracing.txt > tracing_clean.txt || true
     grep "Benchmark" enforce_log.txt > enforce_log_clean.txt || true
     grep "Benchmark" enforce_errno.txt > enforce_errno_clean.txt || true
+    grep "Benchmark" collateral.txt > collateral_clean.txt || true
     
-    benchstat baseline_clean.txt tracing_clean.txt enforce_log_clean.txt enforce_errno_clean.txt
+    benchstat baseline_clean.txt tracing_clean.txt enforce_log_clean.txt enforce_errno_clean.txt collateral_clean.txt
 else
     echo "Install benchstat to see the statistical comparison."
-    echo "Raw results are saved in baseline.txt, tracing.txt, enforce_log.txt, enforce_errno.txt"
+    echo "Raw results are saved in baseline.txt, tracing.txt, enforce_log.txt, enforce_errno.txt, collateral.txt"
 fi
 
 echo ""

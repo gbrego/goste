@@ -27,6 +27,7 @@ plt.rcParams.update({
 # Color palette — Tableau 10 (academic standard for data visualization)
 COLORS = {
     'Baseline':      '#4E79A7',   # Tableau blue
+    'Collateral':    '#B0B0B0',   # Gray
     'Tracing':       '#59A14F',   # Tableau green
     'Enf. (Log)':    '#E15759',   # Tableau red
     'Enf. (Errno)':  '#8172B2',   # dark violet
@@ -34,6 +35,7 @@ COLORS = {
 
 HATCHES = {
     'Baseline':      '',
+    'Collateral':    '',
     'Tracing':       '//',
     'Enf. (Log)':    '\\\\',
     'Enf. (Errno)':  'xx',
@@ -42,6 +44,7 @@ HATCHES = {
 # ── Data parsing ─────────────────────────────────────────────────────────────
 FILES = {
     'Baseline':      'baseline.txt',
+    'Collateral':    'collateral.txt',
     'Tracing':       'tracing.txt',
     'Enf. (Log)':    'enforce_log.txt',
     'Enf. (Errno)':  'enforce_errno.txt',
@@ -199,13 +202,13 @@ valid_pairs = [(s, p, l) for s, p, l in pairs
                if any(s in data.get(m, {}) and p in data.get(m, {}) for m in modes)]
 
 if valid_pairs:
-    fig4, axes = plt.subplots(1, len(valid_pairs),
-                              figsize=(5.5 * len(valid_pairs), 5))
+    fig4, axes = plt.subplots(len(valid_pairs), 1,
+                              figsize=(6, 4.5 * len(valid_pairs)))
     if len(valid_pairs) == 1:
         axes = [axes]
 
     for ax, (seq_b, par_b, title) in zip(axes, valid_pairs):
-        bar_w = 0.35
+        bar_w = 0.44
         x = np.arange(len(modes))
 
         seq_vals = [get(seq_b, m) for m in modes]
@@ -224,19 +227,19 @@ if valid_pairs:
                     fmt = f'{h:.0f}' if h >= 10 else f'{h:.1f}'
                     ax.text(bar.get_x() + bar.get_width()/2,
                             h + max_val * 0.02, fmt,
-                            ha='center', va='bottom', fontsize=8,
+                            ha='center', va='bottom', fontsize=9,
                             fontweight='bold')
 
         ax.set_ylabel('Latency (ns/op)')
         ax.set_title(title)
         ax.set_xticks(x)
         ax.set_xticklabels(modes)
-        ax.set_ylim(0, max_val * 1.25)
-        ax.legend(loc='upper left', fontsize=9)
+        ax.set_ylim(0, max_val * 1.3)
+        ax.legend(loc='upper left', fontsize=10)
 
     fig4.suptitle('Multi-Core Scalability: Sequential vs Parallel (16 threads)',
-                  fontsize=14, fontweight='bold', y=1.02)
-    fig4.tight_layout()
+                  fontsize=14, fontweight='bold', y=0.98)
+    fig4.tight_layout(rect=[0, 0, 1, 0.96])
     fig4.savefig('fig_scalability.pdf', format='pdf', bbox_inches='tight')
     plt.close(fig4)
     print("  ✓ fig_scalability.pdf")
@@ -245,13 +248,13 @@ if valid_pairs:
 # ══════════════════════════════════════════════════════════════════════════════
 # FIGURE 5 — Overhead Breakdown (horizontal bars, legend below)
 # ══════════════════════════════════════════════════════════════════════════════
-fig5, ax5 = plt.subplots(figsize=(8, 5))
+fig5, ax5 = plt.subplots(figsize=(8, 9))
 
 benchmarks = ['SyscallClose', 'StateTransition', 'GoroutineCreation']
 bench_labels = ['Syscall\n(close)', 'State\nTransition', 'Goroutine\nCreation']
 overhead_modes = [m for m in modes if m != 'Baseline']
 
-y = np.arange(len(benchmarks))
+y = np.arange(len(benchmarks)) * 1.6  # wider spacing between groups
 bar_h = 0.28
 max_ov = 0
 
@@ -283,7 +286,7 @@ for j, m in enumerate(overhead_modes):
 
 ax5.set_xlabel('Overhead vs Baseline (ns/op)')
 ax5.set_title('GoSTE Overhead Breakdown by Primitive')
-ax5.set_yticks(y + bar_h)
+ax5.set_yticks(y + bar_h * (len(overhead_modes) - 1) / 2)
 ax5.set_yticklabels(bench_labels)
 ax5.legend(loc='upper right', ncol=1, frameon=True, fancybox=True)
 ax5.invert_yaxis()
