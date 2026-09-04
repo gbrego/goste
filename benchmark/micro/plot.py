@@ -63,13 +63,17 @@ def parse_benchmarks(filename):
                 name = parts[0].split('-')[0].replace('Benchmark', '')
                 val = float(parts[-2])
                 results.setdefault(name, []).append(val)
-    return {k: np.mean(v) for k, v in results.items()}
+    means = {k: np.median(v) for k, v in results.items()}
+    stds = {k: np.std(v) if len(v) > 1 else 0.0 for k, v in results.items()}
+    return means, stds
 
 data = {}
+data_std = {}
 for mode, fname in FILES.items():
-    parsed = parse_benchmarks(fname)
-    if parsed:
-        data[mode] = parsed
+    parsed_means, parsed_stds = parse_benchmarks(fname)
+    if parsed_means:
+        data[mode] = parsed_means
+        data_std[mode] = parsed_stds
 
 if not data:
     print("No data found to plot. Exiting.")
@@ -80,6 +84,9 @@ modes = [m for m in FILES if m in data]
 def get(bench, mode):
     return data.get(mode, {}).get(bench, 0)
 
+def get_std(bench, mode):
+    return data_std.get(mode, {}).get(bench, 0)
+
 
 def annotate_bar(ax, x, val, baseline, max_val, fontsize=9):
     """Annotate a bar with value and overhead percentage."""
@@ -87,13 +94,13 @@ def annotate_bar(ax, x, val, baseline, max_val, fontsize=9):
         return
     overhead = val - baseline
     if abs(overhead) < 0.5:
-        txt = f'{val:.1f} ns' if val < 10 else f'{val:.0f} ns'
+        txt = f'{val+1e-9:.1f} ns' if val < 10 else f'{val+1e-9:.0f} ns'
     else:
         pct = (overhead / baseline) * 100 if baseline > 0 else 0
         if pct > 1:
-            txt = f'{val:.0f} ns\n(+{pct:.0f}%)'
+            txt = f'{val+1e-9:.0f} ns\n(+{pct+1e-9:.0f}%)'
         else:
-            txt = f'{val:.0f} ns\n(+{overhead:.1f})'
+            txt = f'{val+1e-9:.0f} ns\n(+{overhead+1e-9:.1f})'
     ax.text(x, val + max_val * 0.03, txt,
             ha='center', va='bottom', fontsize=fontsize, fontweight='bold')
 
@@ -105,6 +112,7 @@ fig1, ax1 = plt.subplots(figsize=(7.5, 5))
 
 bench = 'SyscallClose'
 vals = [get(bench, m) for m in modes]
+errs = [get_std(bench, m) for m in modes]
 baseline_val = get(bench, 'Baseline')
 x = np.arange(len(modes))
 
@@ -137,6 +145,7 @@ fig2, ax2 = plt.subplots(figsize=(7.5, 5))
 
 bench = 'StateTransition'
 vals = [get(bench, m) for m in modes]
+errs = [get_std(bench, m) for m in modes]
 baseline_val = get(bench, 'Baseline')
 x = np.arange(len(modes))
 
@@ -165,10 +174,11 @@ fig3, ax3 = plt.subplots(figsize=(7.5, 5))
 
 bench = 'GoroutineCreation'
 vals = [get(bench, m) for m in modes]
+errs = [get_std(bench, m) for m in modes]
 baseline_val = get(bench, 'Baseline')
 x = np.arange(len(modes))
 
-bars = ax3.bar(x, vals, width=0.55, edgecolor='black', linewidth=0.8,
+bars = ax3.bar(x, vals, yerr=errs, capsize=2, error_kw=dict(elinewidth=0.8, capthick=0.8), width=0.55, edgecolor='black', linewidth=0.8,
                color=[COLORS[m] for m in modes],
                hatch=[HATCHES[m] for m in modes])
 
@@ -212,7 +222,9 @@ if valid_pairs:
         x = np.arange(len(modes))
 
         seq_vals = [get(seq_b, m) for m in modes]
+        seq_errs = [get_std(seq_b, m) for m in modes]
         par_vals = [get(par_b, m) for m in modes]
+        par_errs = [get_std(par_b, m) for m in modes]
 
         bars1 = ax.bar(x - bar_w/2, seq_vals, bar_w, label='Sequential',
                        color='#4E79A7', edgecolor='black', linewidth=0.8)
@@ -224,7 +236,7 @@ if valid_pairs:
             for bar in bar_group:
                 h = bar.get_height()
                 if h > 0:
-                    fmt = f'{h:.0f}' if h >= 10 else f'{h:.1f}'
+                    fmt = f'{h+1e-9:.0f}' if h >= 10 else f'{h+1e-9:.1f}'
                     ax.text(bar.get_x() + bar.get_width()/2,
                             h + max_val * 0.02, fmt,
                             ha='center', va='bottom', fontsize=9,
@@ -265,21 +277,24 @@ plt.rcParams['hatch.linewidth'] = 0.5
 
 for j, m in enumerate(overhead_modes):
     overheads = []
-    for b in benchmarks:
+    for i, b in enumerate(benchmarks):
         base = get(b, 'Baseline')
         val = get(b, m)
-        overheads.append(max(val - base, 0))
-    max_ov = max(max_ov, max(overheads))
+        err = get_std(b, m)
+        ov = max(val - base, 0)
+        overheads.append(ov)
+        max_ov = max(max_ov, ov + err)
 
-    bars = ax5.barh(y + j * bar_h, overheads, bar_h,
-                    label=m, color=COLORS[m], edgecolor='black',
+        ax5.barh(y[i] + (j - (len(overhead_modes)-1)/2) * bar_h, ov, bar_h, 
+                    xerr=err if b == 'GoroutineCreation' else None, capsize=2, error_kw=dict(elinewidth=0.8, capthick=0.8),
+                    label=m if i == 0 else "", color=COLORS[m], edgecolor='black',
                     linewidth=0.8, hatch=THIN_HATCHES.get(m, ''))
 
-    for bar, ov, b in zip(bars, overheads, benchmarks):
+    for bar, ov, b in zip(ax5.patches[-len(benchmarks):], overheads, benchmarks):
         if ov > 0:
             base = get(b, 'Baseline')
             pct = (ov / base) * 100 if base > 0 else 0
-            lbl = f'+{ov:.0f} ns ({pct:.0f}%)'
+            lbl = f'+{ov+1e-9:.0f} ns ({pct+1e-9:.0f}%)'
             ax5.text(bar.get_width() + max_ov * 0.02,
                      bar.get_y() + bar.get_height() / 2,
                      lbl, va='center', fontsize=9, fontweight='bold')

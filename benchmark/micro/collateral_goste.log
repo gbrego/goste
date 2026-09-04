@@ -3,8 +3,8 @@ Detected goid offset for 'runtime.g.goid': a0
 [Engine] Attaching state triggers to symbols: [{./micro.test goste/benchmark/micro.StateTransitionTrigger}]
 Engine ready. Starting target: ./micro.test
 [Engine] Dropping target process privileges to uid=1000 gid=1000
-Tracing task with PID: 16670
+Tracing task with PID: 24718
 
-[Engine] Propagating SIGTERM to child process (PID 16670)...
+[Engine] Propagating SIGTERM to child process (PID 24718)...
 
-[Engine] Target process (PID 16670) exited: signal: terminated
+[Engine] Target process (PID 24718) exited: signal: terminated

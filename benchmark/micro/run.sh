@@ -8,12 +8,19 @@ echo "============================================="
 echo "   GoSTE Microbenchmarks Automation Script   "
 echo "============================================="
 
+BENCHSTAT_CMD="benchstat"
 if ! command -v benchstat &> /dev/null; then
-    echo ""
-    echo "Warning: benchstat is not installed."
-    echo "You can install it with: go install golang.org/x/perf/cmd/benchstat@latest"
-    echo "Continuing anyway... results will be in raw text format."
-    echo ""
+    GOPATH_BIN="$(go env GOPATH)/bin/benchstat"
+    if [ -x "$GOPATH_BIN" ]; then
+        BENCHSTAT_CMD="$GOPATH_BIN"
+    else
+        echo ""
+        echo "Warning: benchstat is not installed."
+        echo "You can install it with: go install golang.org/x/perf/cmd/benchstat@latest"
+        echo "Continuing anyway... results will be in raw text format."
+        echo ""
+        BENCHSTAT_CMD=""
+    fi
 fi
 
 echo "[1/4] Building Microbenchmarks..."
@@ -35,7 +42,7 @@ pushd ../../ > /dev/null
 make build
 popd > /dev/null
 
-BENCH_COUNT=1
+BENCH_COUNT=6
 BENCH_TIME="1s"
 
 echo ""
@@ -87,7 +94,7 @@ echo ""
 echo "============================================="
 echo "                 Results                     "
 echo "============================================="
-if command -v benchstat &> /dev/null; then
+if [ -n "$BENCHSTAT_CMD" ]; then
     # We grep the lines containing Benchmark from the output because goste prints its own stdout
     grep "Benchmark" baseline.txt > baseline_clean.txt || true
     grep "Benchmark" tracing.txt > tracing_clean.txt || true
@@ -95,7 +102,7 @@ if command -v benchstat &> /dev/null; then
     grep "Benchmark" enforce_errno.txt > enforce_errno_clean.txt || true
     grep "Benchmark" collateral.txt > collateral_clean.txt || true
     
-    benchstat baseline_clean.txt tracing_clean.txt enforce_log_clean.txt enforce_errno_clean.txt collateral_clean.txt
+    $BENCHSTAT_CMD baseline_clean.txt tracing_clean.txt enforce_log_clean.txt enforce_errno_clean.txt collateral_clean.txt | tee benchstat_results.txt
 else
     echo "Install benchstat to see the statistical comparison."
     echo "Raw results are saved in baseline.txt, tracing.txt, enforce_log.txt, enforce_errno.txt, collateral.txt"
