@@ -1138,7 +1138,6 @@ func (e *Engine) attachEnforcementProbes() error {
 	}
 	defer file.Close()
 	var symbols []string
-	var cookies []uint64
 	seen := make(map[string]bool)
 	prefix := "__x64_sys_"
 	if runtime.GOARCH == "arm64" {
@@ -1156,10 +1155,9 @@ func (e *Engine) attachEnforcementProbes() error {
 		sym := parts[0]
 		if strings.HasPrefix(sym, prefix) {
 			name := strings.TrimPrefix(sym, prefix)
-			if id, ok := GeneratedSyscallsByName[name]; ok {
+			if _, ok := GeneratedSyscallsByName[name]; ok {
 				if !seen[sym] {
 					symbols = append(symbols, sym)
-					cookies = append(cookies, uint64(id))
 					seen[sym] = true
 				}
 			}
@@ -1176,7 +1174,7 @@ func (e *Engine) attachEnforcementProbes() error {
 
 	km, err := link.KprobeMulti(e.bpfObjects.OverrideSyscallFilter, link.KprobeMultiOptions{
 		Symbols: symbols,
-		Cookies: cookies,
+		// Cookies removed: syscall_id is now read from pt_regs->orig_ax in BPF
 	})
 	if err != nil {
 		return fmt.Errorf("attaching kprobe.multi for syscall enforcement: %w", err)

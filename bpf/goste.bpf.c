@@ -346,10 +346,13 @@ int remove_exiting_goroutine(struct pt_regs *ctx) {
  * Get the syscall bitmap of the current task or goroutine
  */
 static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
-                                                      u8 **syscalls) {
+                                                      u8 **syscalls,
+                                                      struct task_struct **out_task) {
   struct task_struct *task = bpf_get_current_task_btf();
   u32 *state_id = NULL, *success, root_state_id = 0;
   struct app_state *state;
+
+  *out_task = task;
 
   // Get application state from the tracee map
   state_id = bpf_task_storage_get(&task_tracee_map, task, NULL, 0);
@@ -409,7 +412,7 @@ void BPF_PROG(monitor_syscall_event, struct pt_regs *regs, long syscall_id) {
   int err;
   struct task_struct *task;
 
-  err = get_current_syscall_bitmap(regs, &syscalls);
+  err = get_current_syscall_bitmap(regs, &syscalls, &task);
   if (err || !syscalls /* non-tracee tasks */) {
     return;
   }
@@ -419,7 +422,6 @@ void BPF_PROG(monitor_syscall_event, struct pt_regs *regs, long syscall_id) {
   // This is what seccomp does to distinguish 32-bit syscalls belonging to
   // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs
   // (see: arch/x86/include/asm/syscall.h#L167)
-  task = bpf_get_current_task_btf();
   if (task->thread_info.status & TS_COMPAT) {
     // i386 ABI
     bpf_printk("Syscalls belonging to the i386 architecture are not "
@@ -589,7 +591,7 @@ int override_syscall_filter(struct pt_regs *ctx) {
   struct task_struct *task;
 
   struct pt_regs *real_regs = (struct pt_regs *)ctx->di;
-  err = get_current_syscall_bitmap(real_regs, &syscalls);
+  err = get_current_syscall_bitmap(real_regs, &syscalls, &task);
 
   if (err) {
     return 1;
@@ -611,7 +613,10 @@ int override_syscall_filter(struct pt_regs *ctx) {
 
   // Tracee task
 
-  syscall_id = bpf_get_attach_cookie(ctx);
+  // The syscall number is already in real_regs->orig_ax (saved rax at kernel
+  // entry). Reading it directly avoids the binary search that bpf_get_attach_cookie
+  // performs over all 344 registered kprobe.multi entries.
+  bpf_probe_read_kernel(&syscall_id, sizeof(syscall_id), &real_regs->orig_ax);
 
   // MOMENTARY HOPEFULLY NOT DEFINITIVE
   // it feels inheretly wrong, however, for most targets it could be essential
@@ -635,7 +640,6 @@ int override_syscall_filter(struct pt_regs *ctx) {
   // This is what seccomp does to distinguish 32-bit syscalls belonging to
   // the i386 ABI from syscalls belonging to the x86_64 and x32 ABIs
   // (see: arch/x86/include/asm/syscall.h#L167)
-  task = bpf_get_current_task_btf();
   if (task->thread_info.status & TS_COMPAT) {
     // i386 ABI
     bpf_printk("Syscalls belonging to the i386 architecture are not "

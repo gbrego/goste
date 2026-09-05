@@ -30,4 +30,6 @@ benchmark/micro/*.txt
 benchmark/micro/*.json
 benchmark/micro/*.test
 benchmark/micro/*.pdf
+benchmark/micro/*.log
+
 

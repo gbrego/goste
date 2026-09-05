@@ -79,7 +79,7 @@ echo "Enforcement (Errno) completed."
 
 echo ""
 echo "--- Running Collateral Mode (Non-traced process, GoSTE active) ---"
-sudo ../../goste enforce -a log micro_policy.json ./micro.test -test.run=TestSleep > collateral_goste.log 2>&1 &
+sudo ../../goste enforce -a errno micro_policy.json ./micro.test -test.run=TestSleep > collateral_goste.log 2>&1 &
 GOSTE_PID=$!
 sleep 2 # Let it initialize
 if ! kill -0 $GOSTE_PID 2>/dev/null; then

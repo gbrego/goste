@@ -33,7 +33,7 @@ targets:
   # ── etcd (Light/Baseline) ──────────────────────────────────────────────────
   # Original test: 100k puts, 10 clients. Good for a quick baseline.
   etcd_light:
-    enabled: false
+    enabled: true
     binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
     args: ["--data-dir=default.etcd"]
     state_symbols:
@@ -137,7 +137,7 @@ targets:
 
   # ── CoreDNS (Intensive Tracing) ───────────────────────────────────────────
   coredns_intensive:
-    enabled: true
+    enabled: false
     binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/coredns"
     args: 
       - "-conf"
