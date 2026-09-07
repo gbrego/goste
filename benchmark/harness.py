@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from metrics import MetricsCollector
 from report import generate_report
 from targets import load_adapter
+from lg_parser import parse_load_generator_output
 
 # ─── Logging setup ────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -339,9 +340,10 @@ def execute_run(
             # Always capture stderr so we can diagnose failures.
             # stdout is discarded (we don't need throughput numbers here).
             lg_stderr_file = tempfile.TemporaryFile(mode="w+", suffix="_lg_stderr")
+            lg_stdout_file = tempfile.TemporaryFile(mode="w+", suffix="_lg_stdout")
             lg_proc = subprocess.Popen(
                 lg_cmd,
-                stdout=subprocess.DEVNULL,
+                stdout=lg_stdout_file,
                 stderr=lg_stderr_file,
             )
         except FileNotFoundError as exc:
@@ -381,6 +383,12 @@ def execute_run(
             lg_returncode = lg_proc.returncode
 
     # ── Log load gen diagnostics ─────────────────────────────────────────────
+    lg_stdout_text = ""
+    if lg_proc is not None and 'lg_stdout_file' in locals():
+        lg_stdout_file.seek(0)
+        lg_stdout_text = lg_stdout_file.read().strip()
+        lg_stdout_file.close()
+
     if lg_stderr_file is not None:
         lg_stderr_file.seek(0)
         lg_stderr_text = lg_stderr_file.read().strip()
@@ -393,6 +401,12 @@ def execute_run(
             )
         elif lg_stderr_text:
             log.debug("  │  Load gen stderr:\n%s", lg_stderr_text)
+
+    # ── Parse Load Generator Output ───────────────────────────────────────────
+    lg_metrics = {}
+    if lg_cmd and lg_stdout_text:
+        lg_metrics = parse_load_generator_output(lg_cmd[0], lg_stdout_text)
+
 
     # ── Stop collectors ───────────────────────────────────────────────────────
     target_collector.stop()
@@ -440,6 +454,7 @@ def execute_run(
         "actual_duration_s": actual_duration_s,
         "target_metrics":   target_metrics,
         "goste_metrics":    goste_metrics,
+        "lg_metrics":       lg_metrics,
         "error":            None,
     }
 
@@ -453,6 +468,7 @@ def _empty_run(target: str, mode: str, run: int, error: str) -> Dict[str, Any]:
         "goste_pid":      None,
         "target_metrics": {},
         "goste_metrics":  None,
+        "lg_metrics":     {},
         "error":          error,
     }
 
@@ -486,28 +502,31 @@ def benchmark_target(
 
     all_results: List[Dict[str, Any]] = []
 
-    # ── Determine / generate policy ───────────────────────────────────────────
+    # ── Determine enforcement policy ──────────────────────────────────────────
     # Policy is only needed if enforcement mode is requested.
-    policy_path: Optional[str] = None
-    auto_policy  = os.path.join(results_dir, f"{target_name}_policy.json")
+    enforcement_policy_path: Optional[str] = None
+    tracing_output_policy = os.path.join(results_dir, f"{target_name}_tracing_output.json")
 
     if "enforcement" in modes:
         cfg_policy = target_cfg.get("policy")
+        auto_policy = os.path.join(results_dir, f"{target_name}_policy.json")
 
         if cfg_policy and Path(cfg_policy).exists():
-            policy_path = cfg_policy
-            log.info("[%s] Using pre-built policy: %s", target_name, policy_path)
+            enforcement_policy_path = cfg_policy
+            log.info("[%s] Using pre-built policy: %s", target_name, enforcement_policy_path)
+
+        elif not cfg_policy and Path(auto_policy).exists():
+            enforcement_policy_path = auto_policy
+            log.info("[%s] Using auto-generated policy: %s", target_name, enforcement_policy_path)
 
         elif cfg_policy and not Path(cfg_policy).exists():
             log.warning(
                 "[%s] Policy file '%s' not found – will auto-generate",
                 target_name, cfg_policy,
             )
-            # fall through to auto-generate
 
-        if not policy_path:
+        if not enforcement_policy_path:
             # Auto-generate only if tracing mode is NOT already in the run list
-            # (if it is, the policy will be produced by the first tracing run)
             if "tracing" not in modes:
                 log.info(
                     "[%s] Auto-generating policy (tracing warmup run)…", target_name
@@ -515,19 +534,18 @@ def benchmark_target(
                 ok = generate_policy(
                     goste_bin=goste_bin,
                     adapter=adapter,
-                    policy_out=auto_policy,
+                    policy_out=tracing_output_policy,
                     duration=global_cfg.get("warmup_secs", 15) + 10,
                     dry_run=dry_run,
                 )
                 if ok:
-                    policy_path = auto_policy
+                    enforcement_policy_path = tracing_output_policy
                 else:
                     log.error(
                         "[%s] Policy generation failed – enforcement mode skipped",
                         target_name,
                     )
                     modes = [m for m in modes if m != "enforcement"]
-            # else: policy will be set after tracing runs complete
 
     # ── Run modes in order ────────────────────────────────────────────────────
     for mode in MODES:
@@ -536,23 +554,39 @@ def benchmark_target(
 
         log.info("[%s] Mode: %s (%d runs)", target_name, mode.upper(), num_runs)
 
-        # For enforcement mode, if we rely on auto-generated policy from tracing
-        # runs, verify it exists now.
-        if mode == "enforcement" and not policy_path:
-            if Path(auto_policy).exists():
-                policy_path = auto_policy
-                log.info("[%s] Using auto-generated policy: %s", target_name, policy_path)
-            else:
-                log.error(
-                    "[%s] No policy available for enforcement – skipping mode",
-                    target_name,
-                )
-                continue
+        if mode == "enforcement":
+            if not enforcement_policy_path:
+                if Path(tracing_output_policy).exists():
+                    enforcement_policy_path = tracing_output_policy
+                    log.info("[%s] Using auto-generated policy: %s", target_name, enforcement_policy_path)
+                else:
+                    log.error(
+                        "[%s] No policy available for enforcement – skipping mode",
+                        target_name,
+                    )
+                    continue
+                    
+            if enforcement_policy_path:
+                try:
+                    import importlib
+                    import make_permissive
+                    importlib.reload(make_permissive)
+                    make_permissive.make_permissive(enforcement_policy_path)
+                    log.info("[%s] Auto-patched policy to be maximally permissive.", target_name)
+                except Exception as exc:
+                    log.error("[%s] Failed to patch policy: %s", target_name, exc)
 
         for run_idx in range(num_runs):
             # Allow adapter to perform per-run setup (e.g. clean data dirs)
             if not dry_run:
                 adapter.pre_run_hook()
+
+            # Determine which policy path to use for this specific run
+            run_policy_path = None
+            if mode == "tracing":
+                run_policy_path = tracing_output_policy
+            elif mode == "enforcement":
+                run_policy_path = enforcement_policy_path
 
             result = execute_run(
                 mode=mode,
@@ -560,7 +594,7 @@ def benchmark_target(
                 adapter=adapter,
                 global_cfg=global_cfg,
                 goste_bin=goste_bin,
-                policy_path=policy_path if mode in ("tracing", "enforcement") else None,
+                policy_path=run_policy_path,
                 results_dir=results_dir,
                 dry_run=dry_run,
             )
@@ -570,12 +604,12 @@ def benchmark_target(
                 adapter.post_run_hook()
 
         # After the first successful tracing run, the policy file may now exist
-        if mode == "tracing" and not policy_path:
-            if Path(auto_policy).exists():
-                policy_path = auto_policy
+        if mode == "tracing" and not enforcement_policy_path:
+            if Path(tracing_output_policy).exists():
+                enforcement_policy_path = tracing_output_policy
                 log.info(
                     "[%s] Policy produced by tracing run → %s",
-                    target_name, policy_path,
+                    target_name, enforcement_policy_path,
                 )
 
     return all_results

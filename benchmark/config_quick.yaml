@@ -1,0 +1,379 @@
+# GoSTE Benchmark Configuration - QUICK TEST MODE
+# ─────────────────────────────────────────────────────────────────────────────
+# All paths are resolved relative to the benchmark/ directory unless absolute.
+# Run the harness as root (required for GoSTE / eBPF):
+#   sudo python3 harness.py -c config_quick.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Path to the compiled GoSTE binary
+goste_binary: "../goste"
+
+# ── Global timing parameters ─────────────────────────────────────────────────
+runs: 1             # repetitions per mode (baseline / tracing / enforcement)
+warmup_secs: 1      # seconds to let the target warm up before measuring
+duration_secs: 15    # measurement window (continuous) or safety timeout (oneshot load generators)
+cooldown_secs: 3    # pause between consecutive runs (let system settle)
+
+# ── Target definitions ────────────────────────────────────────────────────────
+targets:
+
+  # ── etcd (Light/Baseline) ──────────────────────────────────────────────────
+  etcd_light:
+    enabled: true
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: ["--data-dir=default.etcd"]
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=5"
+        - "--conns=5"
+        - "put"
+        - "--key-size=8"
+        - "--val-size=256"
+        - "--total=1000"
+
+  # ── etcd (Intensive Overhead Stress) ───────────────────────────────────────
+  etcd_intensive:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: 
+      - "--data-dir=/dev/shm/etcd_bench.data"
+      - "--quota-backend-bytes=8589934592"
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Put"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Range"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).DeleteRange"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Txn"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Compact"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseGrant"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseRevoke"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*AuthServer).Authenticate"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Defragment"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Snapshot"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*watchableStore).notify"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Put"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Get"
+      - "go.etcd.io/etcd/server/v3/storage/wal.(*filePipeline).run"
+      - "go.etcd.io/bbolt.(*Tx).Commit"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=10"
+        - "--conns=10"
+        - "put"
+        - "--key-size=8"
+        - "--val-size=128"
+        - "--total=20000"
+
+  # ── etcd (Data Heavy - Serialization Stress) ──────────────────────────────
+  etcd_data_heavy:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: 
+      - "--data-dir=/dev/shm/etcd_data.data"
+      - "--quota-backend-bytes=8589934592"
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=5"
+        - "--conns=5"
+        - "put"
+        - "--key-size=8"
+        - "--val-size=1048576"
+        - "--total=1000"
+
+  # ── etcd (Logic Heavy - Transactional Stress) ─────────────────────────────
+  etcd_logic_heavy:
+    enabled: false
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/etcd"
+    args: ["--data-dir=/dev/shm/etcd_logic.data"]
+    state_symbols:
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).Process"
+    load_generator:
+      type: oneshot
+      binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
+      args:
+        - "--endpoints=http://localhost:2379"
+        - "--clients=5"
+        - "--conns=5"
+        - "stm"
+        - "--total=2000"
+        - "--keys=50"
+        - "--keys-per-txn=5"
+        - "--isolation=s"
+
+  # ── CoreDNS (Intensive Tracing) ───────────────────────────────────────────
+  coredns_intensive:
+    enabled: true
+    binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/coredns"
+    args: 
+      - "-conf"
+      - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/Corefile"
+    port: 1053
+    state_symbols:
+      - "github.com/coredns/coredns/core/dnsserver.(*Server).ServePacket"
+      - "github.com/coredns/coredns/core/dnsserver.(*Server).ServeDNS"
+      - "github.com/coredns/coredns/core/dnsserver.errorFunc"
+      - "github.com/coredns/coredns/request.(*Request).NewWithQuestion"
+      - "github.com/coredns/coredns/plugin.NextOrFailure"
+      - "github.com/coredns/coredns/plugin.(*pluginWriter).WriteMsg"
+      - "github.com/coredns/coredns/plugin/errors.(*errorHandler).ServeDNS"
+      - "github.com/coredns/coredns/plugin/log.Logger.ServeDNS"
+      - "github.com/coredns/coredns/plugin/metrics.(*Metrics).ServeDNS"
+      - "github.com/coredns/coredns/plugin/cache.(*Cache).ServeDNS"
+      - "github.com/coredns/coredns/plugin/rewrite.Rewrite.ServeDNS"
+      - "github.com/coredns/coredns/plugin/kubernetes.Kubernetes.ServeDNS"
+      - "github.com/coredns/coredns/plugin/forward.(*Forward).ServeDNS"
+      - "github.com/coredns/coredns/plugin/file.File.ServeDNS"
+      - "github.com/coredns/coredns/plugin/hosts.Hosts.ServeDNS"
+      - "github.com/coredns/coredns/plugin/loadbalance.LoadBalance.ServeDNS"
+      - "github.com/coredns/coredns/plugin/whoami.Whoami.ServeDNS"
+    load_generator:
+      type: oneshot
+      binary: "dnsperf"
+      args:
+        - "-s"
+        - "127.0.0.1"
+        - "-p"
+        - "1053"
+        - "-d"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/coredns_1.14.3_linux_amd64/queries.txt"
+        - "-c"
+        - "5"
+        - "-n"
+        - "20000"
+        - "-O"
+        - "latency-histogram"
+
+  # ── geth (Intensive RPC Stress) ────────────────────────────────────────────
+  geth_intensive:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyTransaction"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).SetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Update"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).GasPrice"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).MaxPriorityFeePerGas"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).FeeHistory"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).BlobBaseFee"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*EthereumAPI).Syncing"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).ChainId"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).BlockNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBalance"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetProof"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetHeaderByNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetHeaderByHash"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBlockByNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetBlockByHash"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleByBlockNumberAndIndex"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleByBlockHashAndIndex"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleCountByBlockNumber"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.(*BlockChainAPI).GetUncleCountByBlockHash"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).validJumpdest"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).isCode"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).GetOp"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Caller"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).UseGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).RefundGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Address"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).Value"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).SetCallCode"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).RequiredGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).Run"
+      - "github.com/ethereum/go-ethereum/core/vm.(*ecrecover).Name"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).RequiredGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).Run"
+      - "github.com/ethereum/go-ethereum/core/vm.(*sha256hash).Name"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/rawdb.ReadBlock"
+      - "github.com/ethereum/go-ethereum/core/txpool.(*TxPool).Add"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Prove"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Copy"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_payload.json"
+        - "-c"
+        - "10"
+        - "-n"
+        - "2000"
+        - "http://localhost:8545"
+
+  # ── geth (EVM Computation Heavy) ───────────────────────────────────────────
+  geth_evm_heavy:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-heavy-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).validJumpdest"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).UseGas"
+      - "github.com/ethereum/go-ethereum/core/vm.(*Contract).GetOp"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "5"
+        - "-n"
+        - "1000"
+        - "http://localhost:8545"
+
+  # ── geth (CGO and low-level syscalls) ──────────────────────────────────────
+  geth_cgo:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-cgo-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "secp256k1_ecdsa_recover"
+      - "secp256k1_ecdsa_verify"
+      - "x_cgo_sys_thread_create"
+      - "x_cgo_mmap"
+      - "crosscall2"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/cgo-payload.json"
+        - "-c"
+        - "5"
+        - "-n"
+        - "1000"
+        - "http://localhost:8545"
+
+
+  # ── geth (EVM Computation Heavy - Optimized) ───────────────────────────────
+  geth_evm_refined:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-refined-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleMsg"
+      - "github.com/ethereum/go-ethereum/rpc.(*handler).handleCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.DoCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.doCall"
+      - "github.com/ethereum/go-ethereum/internal/ethapi.applyMessage"
+      - "github.com/ethereum/go-ethereum/core.ApplyMessage"
+      - "github.com/ethereum/go-ethereum/core/vm.(*EVM).Call"
+      - "github.com/ethereum/go-ethereum/crypto.Keccak256"
+      - "github.com/ethereum/go-ethereum/core/state.(*StateDB).GetState"
+      - "github.com/ethereum/go-ethereum/trie.(*Trie).Get"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "5"
+        - "-n"
+        - "1000"
+        - "http://localhost:8545"
+
+
+  geth_no_overhead:
+    enabled: false
+    binary: "/home/brego/go/bin/geth"
+    policy: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/geth-evm-refined-policy.json"
+    args:
+      - "--dev"
+      - "--http"
+      - "--http.addr=127.0.0.1"
+      - "--http.port=8545"
+      - "--verbosity=0"
+    state_symbols:
+      - "github.com/ethereum/go-ethereum/rpc.(*Server).ServeHTTP"
+    load_generator:
+      type: oneshot
+      binary: "hey"
+      args:
+        - "-m"
+        - "POST"
+        - "-T"
+        - "application/json"
+        - "-D"
+        - "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/geth-bench/heavy_evm_payload.json"
+        - "-c"
+        - "5"
+        - "-n"
+        - "1000"
+        - "http://localhost:8545"

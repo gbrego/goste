@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── Academic styling ─────────────────────────────────────────────────────────
-plt.style.use('seaborn-v0_8-whitegrid')
+plt.style.use('default')
 plt.rcParams.update({
     'font.size': 12,
     'font.family': 'serif',
@@ -131,8 +131,7 @@ ax1.set_title('Syscall Interception Overhead — close(-1)')
 ax1.set_xticks(x)
 ax1.set_xticklabels(modes)
 ax1.set_ylim(0, max(vals) * 1.35)
-ax1.grid(True, axis='y')
-ax1.grid(False, axis='x')
+ax1.grid(False)
 ax1.legend(loc='upper left')
 fig1.tight_layout()
 fig1.savefig('fig_syscall_overhead.pdf', format='pdf', bbox_inches='tight')
@@ -159,12 +158,11 @@ for i, (m, v) in enumerate(zip(modes, vals)):
     annotate_bar(ax2, i, v, baseline_val, max(vals))
 
 ax2.set_ylabel('Latency (ns/op)')
-ax2.set_title('State Transition Overhead — Uprobe on StateTransitionTrigger()')
+ax2.set_title('State Transition Overhead')
 ax2.set_xticks(x)
 ax2.set_xticklabels(modes)
 ax2.set_ylim(0, max(vals) * 1.25)
-ax2.grid(True, axis='y')
-ax2.grid(False, axis='x')
+ax2.grid(False)
 fig2.tight_layout()
 fig2.savefig('fig_state_transition.pdf', format='pdf', bbox_inches='tight')
 plt.close(fig2)
@@ -193,12 +191,11 @@ for i, (m, v) in enumerate(zip(modes, vals)):
     annotate_bar(ax3, i, v, baseline_val, max(vals), fontsize=8)
 
 ax3.set_ylabel('Latency (ns/op)')
-ax3.set_title('Goroutine Creation Overhead — runtime.newproc + runtime.runqput')
+ax3.set_title('Goroutine Lifecycle Overhead')
 ax3.set_xticks(x)
 ax3.set_xticklabels(modes)
 ax3.set_ylim(0, max(vals) * 1.3)
-ax3.grid(True, axis='y')
-ax3.grid(False, axis='x')
+ax3.grid(False)
 ax3.legend(loc='upper left')
 fig3.tight_layout()
 fig3.savefig('fig_goroutine_creation.pdf', format='pdf', bbox_inches='tight')
@@ -253,8 +250,7 @@ if valid_pairs:
         ax.set_xticks(x)
         ax.set_xticklabels(modes)
         ax.set_ylim(0, max_val * 1.3)
-        ax.grid(True, axis='y')
-        ax.grid(False, axis='x')
+        ax.grid(False)
         ax.legend(loc='upper left', fontsize=10, frameon=True, fancybox=True)
 
     fig4.suptitle('Multi-Core Scalability: Sequential vs Parallel (16 threads)',
@@ -314,8 +310,7 @@ ax5.set_yticklabels(bench_labels)
 ax5.legend(loc='upper right', ncol=1, frameon=True, fancybox=True)
 ax5.invert_yaxis()
 ax5.set_xlim(0, max_ov * 1.45)
-ax5.grid(True, axis='x')
-ax5.grid(False, axis='y')
+ax5.grid(False)
 fig5.tight_layout()
 fig5.savefig('fig_overhead_summary.pdf', format='pdf', bbox_inches='tight')
 plt.close(fig5)

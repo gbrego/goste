@@ -30,6 +30,9 @@ _METRIC_COLS = [
     "threads_peak",
     "wall_time_ms",
     "samples",
+    "lg_throughput",
+    "lg_latency_p50",
+    "lg_latency_p99",
 ]
 
 _GOSTE_METRIC_COLS = [f"goste_{c}" for c in _METRIC_COLS]
@@ -61,15 +64,20 @@ def write_csv(results: List[Dict[str, Any]], output_path: str) -> None:
         for r in results:
             target_metrics = r.get("target_metrics") or {}
             goste_metrics  = r.get("goste_metrics")  or {}
+            lg_metrics = r.get("lg_metrics") or {}
             row: Dict[str, Any] = {
                 "target": r["target"],
                 "mode":   r["mode"],
                 "run":    r["run"],
             }
             for col in _METRIC_COLS:
-                row[col] = _fmt(target_metrics.get(col))
+                if col.startswith("lg_"):
+                    row[col] = _fmt(lg_metrics.get(col))
+                else:
+                    row[col] = _fmt(target_metrics.get(col))
             for col in _METRIC_COLS:
-                row[f"goste_{col}"] = _fmt(goste_metrics.get(col))
+                if not col.startswith("lg_"):
+                    row[f"goste_{col}"] = _fmt(goste_metrics.get(col))
             writer.writerow(row)
 
 
