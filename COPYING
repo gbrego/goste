@@ -1,0 +1,10 @@
+The code in this repository, unless otherwise specified, is licensed under the
+terms of the Apache 2.0 license.
+
+The BPF code on the other hand is dual-licensed: you can use it either under
+the terms of the GPL v2.0 (only) or the 2-Clause BSD license, at your option.
+Note that this dual licensing only applies to the BPF code, and not this
+project as a whole.
+
+See the files LICENSE, LICENSE.GPL-2.0 and LICENSE.BSD-2-Clause in this
+directory for more details about the terms of these licenses.
