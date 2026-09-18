@@ -1,5 +1,10 @@
 // +build ignore
 
+/*
+ * Copyright 2026 Gabriele Bregolin
+ * SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+ */
+
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
