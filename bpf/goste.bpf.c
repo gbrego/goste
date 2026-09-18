@@ -4,7 +4,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-char __license[] SEC("license") = "Dual MIT/GPL";
+char __license[] SEC("license") = "Dual BSD/GPL";
 
 /* From arch/x86/include/asm/thread_info.h */
 #define TS_COMPAT 0x0002 /* 32bit syscall active (64BIT) */
@@ -27,12 +27,12 @@ char __license[] SEC("license") = "Dual MIT/GPL";
 /* Execution mode: tracing vs enforcement */
 const volatile bool enable_debug_logs = false;
 
-#define debug_printk(fmt, ...) \
-    do { \
-        if (enable_debug_logs) { \
-            bpf_printk(fmt, ##__VA_ARGS__); \
-        } \
-    } while (0)
+#define debug_printk(fmt, ...)                                                 \
+  do {                                                                         \
+    if (enable_debug_logs) {                                                   \
+      bpf_printk(fmt, ##__VA_ARGS__);                                          \
+    }                                                                          \
+  } while (0)
 
 const volatile bool is_tracing = true;
 const volatile __u32 enforce_action = 0;
@@ -181,7 +181,7 @@ int trace_entry_point(struct pt_regs *ctx) {
   trace_task(task, NULL);
 
   debug_printk("Trace entry point triggered for PID %d. Task added to map.\n",
-             current_tgid);
+               current_tgid);
 
   return 0;
 }
@@ -246,9 +246,10 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
   }
 
   if (!parent_state) {
-    debug_printk("Warning: forked process %d could not inherit state from parent "
-               "goroutine",
-               child->pid);
+    debug_printk(
+        "Warning: forked process %d could not inherit state from parent "
+        "goroutine",
+        child->pid);
     // add_to_tracee_map will assign state 0 as default since state is NULL
   }
 
@@ -259,7 +260,7 @@ int BPF_PROG(inherit_state_info, struct task_struct *parent,
     return 1;
   }
   debug_printk("State inherited: parent PID %d -> child PID %d (state_id=0x%x)",
-             parent->pid, child->pid, *child_state);
+               parent->pid, child->pid, *child_state);
   return 0;
 }
 
@@ -275,7 +276,7 @@ int trace_new_goroutine(struct pt_regs *ctx) {
   if (state_id) {
     state_to_save = *state_id;
     debug_printk("G_ENTRY: found parent goid=%llu in map, state=%d\n",
-               parent_goid, state_to_save);
+                 parent_goid, state_to_save);
   } else {
     // bootstrap case, parent is not traced
     struct task_struct *task = bpf_get_current_task_btf();
@@ -287,7 +288,8 @@ int trace_new_goroutine(struct pt_regs *ctx) {
     // whole runtime is compromized and therefore goste is powerless
     if (task_state && *task_state != GO_THREAD_MARKER) {
       state_to_save = *task_state;
-      debug_printk("G_ENTRY: bootstrap seed from task state=%d\n", state_to_save);
+      debug_printk("G_ENTRY: bootstrap seed from task state=%d\n",
+                   state_to_save);
     } else {
       return 0;
     }
@@ -320,8 +322,8 @@ int complete_trace_new_goroutine(struct pt_regs *ctx) {
   struct goroutine_id key = {.tgid = tgid, .goid = child_goid, ._pad = 0};
 
   bpf_map_update_elem(&goroutine_tracee_map, &key, &state_to_save, BPF_ANY);
-  debug_printk("G_RUNQ: goid=%llu, state=%d, tid=%u\n", child_goid, state_to_save,
-             (__u32)tgid_pid);
+  debug_printk("G_RUNQ: goid=%llu, state=%d, tid=%u\n", child_goid,
+               state_to_save, (__u32)tgid_pid);
 
   return 0;
 }
@@ -345,9 +347,9 @@ int remove_exiting_goroutine(struct pt_regs *ctx) {
  * INHERITED AND MODIFIED FROM SYSCOMB
  * Get the syscall bitmap of the current task or goroutine
  */
-static __always_inline int get_current_syscall_bitmap(struct pt_regs *regs,
-                                                      u8 **syscalls,
-                                                      struct task_struct **out_task) {
+static __always_inline int
+get_current_syscall_bitmap(struct pt_regs *regs, u8 **syscalls,
+                           struct task_struct **out_task) {
   struct task_struct *task = bpf_get_current_task_btf();
   u32 *state_id = NULL, *success, root_state_id = 0;
   struct app_state *state;
@@ -614,8 +616,9 @@ int override_syscall_filter(struct pt_regs *ctx) {
   // Tracee task
 
   // The syscall number is already in real_regs->orig_ax (saved rax at kernel
-  // entry). Reading it directly avoids the binary search that bpf_get_attach_cookie
-  // performs over all 344 registered kprobe.multi entries.
+  // entry). Reading it directly avoids the binary search that
+  // bpf_get_attach_cookie performs over all 344 registered kprobe.multi
+  // entries.
   bpf_probe_read_kernel(&syscall_id, sizeof(syscall_id), &real_regs->orig_ax);
 
   // MOMENTARY HOPEFULLY NOT DEFINITIVE

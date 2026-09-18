@@ -43,14 +43,14 @@ HATCHES = {
 
 MODES = ['baseline', 'tracing', 'enforcement']
 
-def load_data():
-    csv_path = 'results/report.csv'
+def load_data(results_dir='results'):
+    csv_path = os.path.join(results_dir, 'report.csv')
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found.")
         return None, None
     df = pd.read_csv(csv_path)
     
-    json_path = 'results/raw_results.json'
+    json_path = os.path.join(results_dir, 'raw_results.json')
     raw_data = []
     if os.path.exists(json_path):
         with open(json_path, 'r') as f:
@@ -111,7 +111,7 @@ def plot_single_metric(df_target, metric, ylabel, title, out_path):
     current_ylim = ax.get_ylim()
     ax.set_ylim(current_ylim[0], current_ylim[1] * 1.15)
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
+    # ax.set_title(title)
     ax.set_xticks(x)
     ax.set_xticklabels([m.capitalize() for m in modes_present])
     ax.grid(False)
@@ -170,7 +170,7 @@ def plot_cpu_stacked(df_target, title, out_path):
     current_ylim = ax.get_ylim()
     ax.set_ylim(current_ylim[0], current_ylim[1] * 1.15)
     ax.set_ylabel('CPU Time (ms)')
-    ax.set_title(title)
+    # ax.set_title(title)
     ax.set_xticks(x)
     ax.set_xticklabels([m.capitalize() for m in modes_present])
     ax.grid(False)
@@ -182,7 +182,7 @@ def plot_cpu_stacked(df_target, title, out_path):
 
 def generate_latency_dist_for_target(target, dist_list, out_path):
     # dist_list is a dict of mode -> list of dists
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(5, 5))
     
     plotted = False
     for mode in MODES:
@@ -243,7 +243,7 @@ def generate_latency_dist_for_target(target, dist_list, out_path):
         # Log scale formatting
         ax.set_xscale('log')
         from matplotlib.ticker import LogLocator, FuncFormatter
-        if target in ['etcd_data_heavy', 'etcd_intensive', 'geth_cgo']:
+        if target in ['etcd_data_heavy', 'etcd_intensive'] or 'geth' in target:
             subs = (1.0, 2.0, 5.0)
         elif range_span < 1.5:
             subs = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
@@ -258,16 +258,18 @@ def generate_latency_dist_for_target(target, dist_list, out_path):
 
     if plotted:
         ax.set_xlabel('Latency (ms)')
-        ax.set_ylabel('Density')
-        ax.set_title(f'Latency Distribution')
+        ax.set_ylabel('Frequency')
+        # ax.set_title(f'Latency Distribution')
         ax.legend()
         fig.tight_layout()
         fig.savefig(out_path)
     plt.close(fig)
 
 def main():
-    print("Generating Workload-specific Benchmark Plots...")
-    df, raw_data = load_data()
+    import sys
+    results_dir = sys.argv[1] if len(sys.argv) > 1 else 'results'
+    print(f"Generating Workload-specific Benchmark Plots for {results_dir}...")
+    df, raw_data = load_data(results_dir)
     if df is None:
         return
         
@@ -286,7 +288,7 @@ def main():
     
     for target in targets:
         app, profile = get_app_profile(target)
-        out_dir = os.path.join('results', app, profile)
+        out_dir = os.path.join(results_dir, app, profile)
         os.makedirs(out_dir, exist_ok=True)
         
         df_target = df[df['target'] == target]

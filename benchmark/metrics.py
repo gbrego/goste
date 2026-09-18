@@ -139,6 +139,11 @@ class MetricsCollector:
         self._snapshots.append(_read_snapshot(self.pid))
         while not self._stop.wait(self.interval):
             self._snapshots.append(_read_snapshot(self.pid))
+            
+        # Take one final snapshot exactly when stop() is called.
+        # This prevents dropping the final fractional second of cumulative data
+        # for benchmarks that don't align perfectly with the polling interval.
+        self._snapshots.append(_read_snapshot(self.pid))
 
     # ── result computation ────────────────────────────────────────────────────
 

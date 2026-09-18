@@ -1,0 +1,19 @@
+.:1053 {
+    errors
+    prometheus 127.0.0.1:9153
+    rewrite name exact dummy.com example.com
+    loadbalance round_robin
+    cache 30
+    hosts {
+        10.0.0.1 dummy.local
+        fallthrough
+    }
+    kubernetes cluster.local {
+        fallthrough
+    }
+    file /dev/null example.com {
+        fallthrough
+    }
+    forward missing.local 1.1.1.1
+    whoami
+}

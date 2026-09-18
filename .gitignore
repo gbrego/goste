@@ -22,6 +22,7 @@ compile_flags.txt
 
 #Macro
 benchmark/results/
+benchmark/results_coredns_new/
 benchmark/__pycache__/
 benchmark/targets/__pycache__/
 

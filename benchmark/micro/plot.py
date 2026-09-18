@@ -127,7 +127,7 @@ for i, (m, v) in enumerate(zip(modes, vals)):
     annotate_bar(ax1, i, v, baseline_val, max(vals))
 
 ax1.set_ylabel('Latency (ns/op)')
-ax1.set_title('Syscall Interception Overhead — close(-1)')
+# ax1.set_title('Syscall Interception Overhead — close(-1)')
 ax1.set_xticks(x)
 ax1.set_xticklabels(modes)
 ax1.set_ylim(0, max(vals) * 1.35)
@@ -158,7 +158,7 @@ for i, (m, v) in enumerate(zip(modes, vals)):
     annotate_bar(ax2, i, v, baseline_val, max(vals))
 
 ax2.set_ylabel('Latency (ns/op)')
-ax2.set_title('State Transition Overhead')
+# ax2.set_title('State Transition Overhead')
 ax2.set_xticks(x)
 ax2.set_xticklabels(modes)
 ax2.set_ylim(0, max(vals) * 1.25)
@@ -191,7 +191,7 @@ for i, (m, v) in enumerate(zip(modes, vals)):
     annotate_bar(ax3, i, v, baseline_val, max(vals), fontsize=8)
 
 ax3.set_ylabel('Latency (ns/op)')
-ax3.set_title('Goroutine Lifecycle Overhead')
+# ax3.set_title('Goroutine Lifecycle Overhead')
 ax3.set_xticks(x)
 ax3.set_xticklabels(modes)
 ax3.set_ylim(0, max(vals) * 1.3)
@@ -215,12 +215,8 @@ valid_pairs = [(s, p, l) for s, p, l in pairs
                if any(s in data.get(m, {}) and p in data.get(m, {}) for m in modes)]
 
 if valid_pairs:
-    fig4, axes = plt.subplots(len(valid_pairs), 1,
-                              figsize=(6, 4.5 * len(valid_pairs)))
-    if len(valid_pairs) == 1:
-        axes = [axes]
-
-    for ax, (seq_b, par_b, title) in zip(axes, valid_pairs):
+    for seq_b, par_b, title in valid_pairs:
+        fig4, ax = plt.subplots(figsize=(7.5, 5))
         bar_w = 0.44
         x = np.arange(len(modes))
 
@@ -246,19 +242,18 @@ if valid_pairs:
                             fontweight='bold')
 
         ax.set_ylabel('Latency (ns/op)')
-        ax.set_title(title)
+        # ax.set_title(title)
         ax.set_xticks(x)
         ax.set_xticklabels(modes)
         ax.set_ylim(0, max_val * 1.3)
         ax.grid(False)
         ax.legend(loc='upper left', fontsize=10, frameon=True, fancybox=True)
 
-    fig4.suptitle('Multi-Core Scalability: Sequential vs Parallel (16 threads)',
-                  fontsize=14, fontweight='bold', y=0.98)
-    fig4.tight_layout(rect=[0, 0, 1, 0.96])
-    fig4.savefig('fig_scalability.pdf', format='pdf', bbox_inches='tight')
-    plt.close(fig4)
-    print("  ✓ fig_scalability.pdf")
+        fig4.tight_layout()
+        out_name = f'fig_scalability_{seq_b.lower()}.pdf'
+        fig4.savefig(out_name, format='pdf', bbox_inches='tight')
+        plt.close(fig4)
+        print(f"  ✓ {out_name}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -303,8 +298,8 @@ for j, m in enumerate(overhead_modes):
                      bar.get_y() + bar.get_height() / 2,
                      lbl, va='center', fontsize=9, fontweight='bold')
 
-ax5.set_xlabel('Overhead vs Baseline (ns/op)')
-ax5.set_title('GoSTE Overhead Breakdown by Primitive')
+ax5.set_xlabel('Overhead vs Baseline')
+# ax5.set_title('GoSTE Overhead Breakdown by Primitive')
 ax5.set_yticks(y + bar_h * (len(overhead_modes) - 1) / 2)
 ax5.set_yticklabels(bench_labels)
 ax5.legend(loc='upper right', ncol=1, frameon=True, fancybox=True)

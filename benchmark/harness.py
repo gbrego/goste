@@ -145,7 +145,7 @@ def _build_enforce_cmd(
     goste_bin: str,
     adapter,
     policy_path: str,
-    action: str = "log",
+    action: str = "errno",
 ) -> List[str]:
     cmd = [goste_bin, "enforce", "--skip-privilege-drop", "-a", action]
     cmd += [policy_path]
@@ -505,7 +505,7 @@ def benchmark_target(
     # ── Determine enforcement policy ──────────────────────────────────────────
     # Policy is only needed if enforcement mode is requested.
     enforcement_policy_path: Optional[str] = None
-    tracing_output_policy = os.path.join(results_dir, f"{target_name}_tracing_output.json")
+    tracing_output_policy = os.path.join(results_dir, f"{target_name}_policy.json")
 
     if "enforcement" in modes:
         cfg_policy = target_cfg.get("policy")

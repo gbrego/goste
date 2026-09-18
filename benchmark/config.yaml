@@ -9,7 +9,7 @@
 goste_binary: "../goste"
 
 # ── Global timing parameters ─────────────────────────────────────────────────
-runs: 2             # repetitions per mode (baseline / tracing / enforcement)
+runs: 6             # repetitions per mode (baseline / tracing / enforcement)
 warmup_secs: 2      # seconds to let the target warm up before measuring
 duration_secs: 120  # measurement window (continuous) or safety timeout (oneshot load generators)
 cooldown_secs: 2    # pause between consecutive runs (let system settle)
@@ -98,7 +98,21 @@ targets:
       - "--data-dir=/dev/shm/etcd_data.data"
       - "--quota-backend-bytes=8589934592"
     state_symbols:
-      - "go.etcd.io/etcd/server/v3/etcdserver.(*EtcdServer).run"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Put"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Range"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).DeleteRange"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Txn"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*kvServer).Compact"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseGrant"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*LeaseServer).LeaseRevoke"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*AuthServer).Authenticate"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Defragment"
+      - "go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc.(*maintenanceServer).Snapshot"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*watchableStore).notify"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Put"
+      - "go.etcd.io/etcd/server/v3/storage/mvcc.(*treeIndex).Get"
+      - "go.etcd.io/etcd/server/v3/storage/wal.(*filePipeline).run"
+      - "go.etcd.io/bbolt.(*Tx).Commit"
     load_generator:
       type: oneshot
       binary: "/home/brego/Documents/Uni/Tesi/industryTargetsAlpha/etcd-v3.6.10-linux-amd64/benchmark-etcd"
@@ -175,6 +189,8 @@ targets:
         - "100"
         - "-n"
         - "50000"
+        - "-O"
+        - "latency-histogram"
 
   # ── geth (Intensive RPC Stress) ────────────────────────────────────────────
   # Stresses the JSON-RPC layer, EVM execution, and state trie operations.
