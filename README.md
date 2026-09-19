@@ -47,6 +47,10 @@ To enforce a policy on an existing process:
 sudo ./goste enforce -a errno -p <PID> policy.json
 ```
 
+## Benchmarks
+
+If you want to run the automated benchmarks, make sure to change the paths in `benchmark/config.yaml` to your local binaries. Further customized profiles can be easily added.
+
 ## References
 
 GoSTE inherits its core principles from the Syscomb project, and extends them to Go targets. For more details on the theoretical foundation, please refer to:
